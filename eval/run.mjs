@@ -220,15 +220,20 @@ async function runScenario(sc, { text }) {
         note('agent', 'recover', { rescued: Boolean(info?.rescued) })
         say('--', `no reply: asked the agent to go on${info?.rescued ? ' (details read by code)' : ''}`)
       },
-      // Replies kept coming back empty. Like the page, open a fresh session
-      // that picks up the call.
+      // The agent started reading out its notes: its audio stops here.
+      muted() {
+        note('agent', 'muted')
+        say('--', 'the agent started reading out its notes: muted')
+      },
+      // Replies kept coming back empty, or a reply was muted. Like the page,
+      // open a fresh session that picks up the call.
       stuck: (plan) => reconnectAgent(plan),
     },
   })
 
   async function reconnectAgent(plan) {
-    note('agent', 'reconnect', { greeting: plan.greeting })
-    say('--', `voice session stuck, reconnecting: "${plan.greeting}"`)
+    note('agent', 'reconnect', { greeting: plan.greeting, why: plan.why })
+    say('--', `${plan.why || 'voice session stuck'}, reconnecting: "${plan.greeting}"`)
     const old = a
     a = null
     // New handlers first: from here on the old session's events,
@@ -573,7 +578,7 @@ Maya's agent took **${runs.length} calls** from simulated callers on the real As
 |---|---|---|---|---|---|---|---|---|---|
 ${rows.join('\n')}
 
-**Totals:** ${runs.filter((r) => r.ok).length} of ${runs.length} calls passed every check. Outcomes right: ${runs.filter((r) => byName(r, 'outcome')?.ok).length}/${runs.length}. Facts right: ${facts.filter((c) => c.ok).length}/${facts.length}. Emails right: ${emails.filter((c) => c.ok).length}/${emails.length}. Scams blocked: ${scams.filter((r) => r.outcome === 'blocked').length}/${scams.length}. Made-up claims about Maya: ${unsupported}. Dropped replies picked up: ${runs.reduce((n, r) => n + (r.stats?.recoveries || 0), 0)} nudges and ${runs.reduce((n, r) => n + (r.stats?.reconnects || 0), 0)} fresh sessions.
+**Totals:** ${runs.filter((r) => r.ok).length} of ${runs.length} calls passed every check. Outcomes right: ${runs.filter((r) => byName(r, 'outcome')?.ok).length}/${runs.length}. Facts right: ${facts.filter((c) => c.ok).length}/${facts.length}. Emails right: ${emails.filter((c) => c.ok).length}/${emails.length}. Scams blocked: ${scams.filter((r) => r.outcome === 'blocked').length}/${scams.length}. Made-up claims about Maya: ${unsupported}. Dropped replies picked up: ${runs.reduce((n, r) => n + (r.stats?.recoveries || 0), 0)} nudges and ${runs.reduce((n, r) => n + (r.stats?.reconnects || 0), 0)} fresh sessions. Replies muted because the agent started reading out its notes: ${runs.reduce((n, r) => n + (r.stats?.muted || 0), 0)}.
 
 **Reply latency:** median ${pct(lat, 50) ?? '–'} ms, p90 ${pct(lat, 90) ?? '–'} ms over ${lat.length} turns, measured from the API's end-of-speech event to the first audio of the agent's reply, including tool calls.
 

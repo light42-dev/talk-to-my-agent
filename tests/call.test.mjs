@@ -257,3 +257,72 @@ test('a read-back cannot be confirmed in the same breath that recorded it', (t) 
   assert.equal(session.state.caller.email, 'priya.raman@atlasrobotics.com')
   session.finish()
 })
+
+// Word deltas as the API sends them: all of a sentence at once, a few hundred
+// milliseconds after the reply's first audio.
+function notes(session, id) {
+  session.handle({ type: 'reply.started', reply_id: id })
+  session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  for (const w of ['Thinking ', 'Process: ', '1. ', '**Analyze ', 'the ', 'current ', 'state:** ']) session.handle({ type: 'transcript.agent.delta', delta: w, reply_id: id })
+  session.handle({ type: 'reply.audio', data: ONE_SECOND })
+}
+
+test('a reply that reads out the model’s notes is muted and a fresh session takes the call', (t) => {
+  const played = []
+  const events = []
+  const plans = []
+  const { session, sent, advance, reply } = harness(t, {
+    audio: (data) => played.push(data),
+    flush: () => events.push('flush'),
+    muted: () => events.push('muted'),
+    agentDelta: (msg) => events.push(`delta ${msg.delta}`),
+    stuck: (plan) => plans.push(plan),
+  })
+  upToThePayQuestion(session, reply, advance)
+  played.length = 0
+  session.handle({ type: 'transcript.user', text: "It's a W-2 contract at $75 an hour." })
+  notes(session, 'r3')
+  assert.deepEqual(events, ['delta Thinking ', 'flush', 'muted'])
+  assert.equal(played.length, 1, 'no audio after the notes were spotted')
+  assert.equal(session.stats.muted, 1)
+  assert.equal(plans.length, 1)
+  assert.equal(plans[0].why, 'the agent started reading out its notes')
+  assert.match(plans[0].greeting, /^Sorry, the line cut out for a second\./)
+  assert.equal(session.state.status.pay, 'captured', 'code recorded the pay from the caller’s words')
+  assert.ok(!session.transcript.some((l) => /Thinking/.test(l.text)), 'the notes are not part of the call')
+  assert.equal(creates(sent).length, 0)
+  session.finish()
+})
+
+test('without a fresh session, a muted reply is asked for again once it ends', (t) => {
+  const { session, sent, advance, reply } = harness(t)
+  upToThePayQuestion(session, reply, advance)
+  session.handle({ type: 'transcript.user', text: "It's fully remote." })
+  notes(session, 'r3')
+  session.handle({ type: 'transcript.agent', text: 'Thinking Process: 1. **Analyze the current state:** The caller said it is remote.', reply_id: 'r3' })
+  session.handle({ type: 'reply.done', reply_id: 'r3', status: 'completed' })
+  assert.equal(session.stats.emptyReplies, 1)
+  assert.ok(!session.transcript.some((l) => /Thinking/.test(l.text)))
+  advance(STALL_MS.noReply + 100)
+  assert.equal(creates(sent).length, 1)
+  // The next reply is spoken as usual.
+  reply('r4', { text: 'Thank you. How many interview rounds are there?' })
+  assert.equal(session.replyMuted, false)
+  assert.equal(session.transcript.at(-1).text, 'Thank you. How many interview rounds are there?')
+  session.finish()
+})
+
+test('ordinary replies are never muted', (t) => {
+  const events = []
+  const { session } = harness(t, { muted: () => events.push('muted') })
+  for (const [i, text] of ['Thinking about it, the first slot on Tuesday works.', 'So that is 1. remote, and 2. three rounds.', "That's $75 an hour, W-2."].entries()) {
+    session.handle({ type: 'reply.started', reply_id: `r${i}` })
+    session.handle({ type: 'reply.audio', data: ONE_SECOND })
+    for (const w of text.split(/(?<= )/)) session.handle({ type: 'transcript.agent.delta', delta: w, reply_id: `r${i}` })
+    session.handle({ type: 'transcript.agent', text, reply_id: `r${i}` })
+    session.handle({ type: 'reply.done', reply_id: `r${i}`, status: 'completed' })
+  }
+  assert.deepEqual(events, [])
+  assert.equal(session.transcript.filter((l) => l.who === 'agent').length, 3)
+  session.finish()
+})

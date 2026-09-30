@@ -35,6 +35,14 @@ const MAX_RECOVERIES = 4
 export const RESUME_TEXT =
   'Carry on from where the call stopped. If the caller said something you have not answered, answer it. If you were cut off, say your last point again in one short sentence. If you were waiting for a tool result, call that tool again.'
 
+// Now and then the model reads out its own notes ("Thinking Process: 1.
+// **Analyze the current state:** …") instead of talking to the caller: once
+// in about 300 replies in the eval. The words arrive while the first half
+// second of audio is still in the page's cushion, so the reply is muted
+// before the caller hears more than a syllable. There is no event to cancel
+// a reply, so a fresh session takes over the call.
+export const NOT_SPEECH = /thinking process|<\/?think>|\*\*/i
+
 // Which record_details argument fills which field.
 const FIELD_OF = {
   pay_min: 'pay',
@@ -81,7 +89,7 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
     queue: createToolQueue(send),
     // The last 300 protocol events, without audio, for debugging a call.
     log: [],
-    stats: { cutOffs: 0, emptyReplies: 0, recoveries: 0, reconnects: 0 },
+    stats: { cutOffs: 0, emptyReplies: 0, recoveries: 0, reconnects: 0, muted: 0 },
     // Caller lines since the agent last recorded details, and how many
     // replies in a row came back with nothing in them.
     unrecorded: [],
@@ -96,6 +104,8 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
     replyActive: false,
     replyHadAudio: false,
     replyText: '',
+    replyDraft: '',
+    replyMuted: false,
     toolsThisReply: [],
     endRequested: false,
     goodbyePending: false,
@@ -214,6 +224,22 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
   // For a host whose voice session closed under a live call.
   call.resumePlan = resumePlan
 
+  // The reply is the model's notes, not speech: stop its audio, keep it out
+  // of the transcript, and hand the call to a fresh session. A host that
+  // can't reconnect gets the reply asked for again once this one ends.
+  function muteReply() {
+    call.replyMuted = true
+    call.stats.muted++
+    call.clock.clear()
+    record('in', 'muted')
+    emit('flush')
+    emit('muted')
+    if (hooks.stuck && call.stats.reconnects < 2 && !call.endRequested) {
+      call.stats.reconnects++
+      emit('stuck', { ...resumePlan(), why: 'the agent started reading out its notes' })
+    }
+  }
+
   // After the host reconnects: the old session's pending results and timers
   // belong to a session that is gone.
   call.resetForNewSession = () => {
@@ -221,6 +247,7 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
     call.queue = createToolQueue(send)
     call.ready = false
     call.replyActive = false
+    call.replyMuted = false
     call.owesReply = false
     call.failStreak = 0
     call.callerSpeakingSince = null
@@ -279,6 +306,8 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
         call.replyActive = true
         call.replyHadAudio = false
         call.replyText = ''
+        call.replyDraft = ''
+        call.replyMuted = false
         call.toolsThisReply = []
         call.owesReply = false
         clearTimeout(call.stallTimer)
@@ -286,6 +315,7 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
         break
 
       case 'reply.audio':
+        if (call.replyMuted) break
         emit('audio', msg.data)
         call.clock.add(audioSeconds(msg.data))
         call.replyHadAudio = true
@@ -303,7 +333,7 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
         // A finished reply leaves the next move to the caller, unless tool
         // results go out below (they start the next reply). A cut-off reply,
         // or one with no speech and no tool call, still owes the caller one.
-        const empty = !interrupted && !call.replyHadAudio && !call.replyText.trim() && !call.toolsThisReply.length
+        const empty = !interrupted && (call.replyMuted || (!call.replyHadAudio && !call.replyText.trim())) && !call.toolsThisReply.length
         if (empty) {
           call.stats.emptyReplies++
           call.failStreak++
@@ -314,7 +344,7 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
         // The agent asked to hang up and has said goodbye: drop any unsent
         // tool results so it doesn't start talking again, then hang up once
         // the goodbye has played. With no transcript yet, audio counts.
-        const saidGoodbye = call.replyText.trim() ? GOODBYE.test(call.replyText) : call.replyHadAudio
+        const saidGoodbye = call.replyMuted ? false : call.replyText.trim() ? GOODBYE.test(call.replyText) : call.replyHadAudio
         const hangingUp = call.endRequested && !interrupted && (saidGoodbye || call.goodbyePending)
         if (hangingUp) call.queue.clear()
         // The rules found a red flag in the caller's words and the agent did
@@ -357,10 +387,21 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
         break
 
       case 'transcript.agent.delta':
+        if (call.replyMuted) break
+        call.replyDraft += msg.delta || ''
+        if (NOT_SPEECH.test(call.replyDraft)) {
+          muteReply()
+          break
+        }
         emit('agentDelta', msg)
         break
 
       case 'transcript.agent':
+        // The caller never heard a muted reply.
+        if (call.replyMuted || NOT_SPEECH.test(msg.text || '')) {
+          if (!call.replyMuted) muteReply()
+          break
+        }
         call.replyText += `${msg.text || ''} `
         call.transcript.push({ who: 'agent', text: msg.text || '', at: new Date(now()).toISOString() })
         emit('line', 'agent', msg.text || '', msg)

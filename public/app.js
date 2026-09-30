@@ -495,7 +495,10 @@ function pageHooks() {
       addLine('tool', describeTool(name, args, result) + (meta?.byCode ? " (read by code from the caller's words)" : ''))
     },
     stuck(plan) {
-      reconnect(call, plan)
+      reconnect(call, plan, plan.why)
+    },
+    muted() {
+      dropPartial('agent')
     },
     change() {
       renderFacts(call.session.state)
@@ -543,7 +546,7 @@ function openSocket(c, token, session) {
     if (c.startedAt && !s.endRequested && s.stats.reconnects < 2) {
       console.warn('[voice agent] the voice session closed mid-call', event.code, event.reason)
       s.stats.reconnects++
-      reconnect(c, s.resumePlan(), 'dropped the call')
+      reconnect(c, s.resumePlan(), 'the voice service dropped the call')
       return
     }
     endCall('closed')
@@ -556,10 +559,10 @@ function openSocket(c, token, session) {
 // The voice service stopped replying on this session. A fresh session picks
 // up the call: it first says the line the call logic wrote (spoken as is),
 // and its prompt carries the call so far. What was recorded stays recorded.
-async function reconnect(c, { greeting, context }, why = 'stopped replying') {
+async function reconnect(c, { greeting, context }, why = 'the voice service stopped replying') {
   if (call !== c || c.finished) return
-  console.warn(`[voice agent] the voice session ${why}; starting a fresh one`)
-  addLine('tool', `the voice service ${why}, so we reconnected`)
+  console.warn(`[voice agent] ${why}; starting a fresh session`)
+  addLine('tool', `${why}, so we reconnected`)
   setStatus('connecting', 'reconnecting')
   const old = c.ws
   c.ws = null
