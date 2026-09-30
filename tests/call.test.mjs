@@ -92,3 +92,21 @@ test('turns end fast until the agent asks for an email, then it waits for the wh
   reply('r4', { text: 'What is the best email?', tools: [['record_contact', { name: 'Jen Park' }]] })
   assert.equal(modeUpdates().length, 1, 'no repeated switches')
 })
+
+test('a sound from the caller does not cut the agent off; a real interruption does', () => {
+  let flushes = 0
+  const session = createCallSession({
+    candidate: CANDIDATE,
+    applications: APPLICATIONS,
+    send: () => {},
+    hooks: { flush: () => flushes++ },
+  })
+  session.handle({ type: 'session.ready', session_id: 'sess_test' })
+  session.handle({ type: 'reply.started', reply_id: 'r1' })
+  session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  session.handle({ type: 'input.speech.started' })
+  assert.equal(flushes, 0, 'an "uh-huh" or noise keeps the audio playing')
+  session.handle({ type: 'reply.done', reply_id: 'r1', status: 'interrupted' })
+  assert.equal(flushes, 1, 'the server-confirmed interruption stops it')
+  session.finish()
+})

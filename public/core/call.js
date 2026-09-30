@@ -79,9 +79,10 @@ export function createCallSession({ candidate, applications, send, hooks = {}, n
         break
 
       case 'input.speech.started':
-        // Barge-in: stop playing the agent, as AssemblyAI's starter does.
-        emit('flush')
-        call.clock.clear()
+        // Don't cut the agent's audio here. This fires on any sound, including
+        // an "uh-huh" or background noise, and the server decides whether it
+        // is a real interruption. When it is, reply.done arrives with status
+        // "interrupted" and the audio is flushed there.
         call.queue.event(msg.type)
         emit('status', 'listening', 'listening')
         break

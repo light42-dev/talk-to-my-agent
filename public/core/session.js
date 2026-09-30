@@ -13,6 +13,9 @@ export const VOICE = 'alba'
 // waits for the whole address.
 export const TRANSCRIPTION_MODE = 'min_latency'
 export const EMAIL_TRANSCRIPTION_MODE = 'balanced'
+// min_latency also drops the barge-in delay to 0 ms, so any small sound could
+// cut the agent off. Keep the balanced default of 500 ms.
+export const INTERRUPTION_DELAY_MS = 500
 
 export function buildGreeting(candidate) {
   return `Hi, you've reached ${candidate.name}'s agent. I'm an AI assistant who handles ${candidate.firstName}'s first conversations about new roles, and I take notes for her. Who am I speaking with?`
@@ -228,6 +231,7 @@ export function buildSession(candidate, applications, now = new Date()) {
       keyterms: buildKeyterms(candidate, applications),
       transcription_prompt: TRANSCRIPTION_PROMPT,
       transcription_mode: TRANSCRIPTION_MODE,
+      turn_detection: { interruption_delay: INTERRUPTION_DELAY_MS },
     },
     output: { voice: VOICE },
   }
