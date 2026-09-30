@@ -256,7 +256,9 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
   // sentence. If that audio is already queued, it goes, with what is left of
   // the sentence.
   function muteRest(index) {
-    const word = call.replyWords.filter((w) => w.at <= index).at(-1)
+    // The first word at or after the notes: a word like "now. (" that only
+    // ends in them is still spoken whole.
+    const word = call.replyWords.find((w) => w.at >= index) || call.replyWords.filter((w) => w.at <= index).at(-1)
     call.replyCutMs = Number.isFinite(word?.startMs) ? word.startMs : index * MS_PER_CHAR
     call.replyMuted = 'rest'
     call.stats.muted++

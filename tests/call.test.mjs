@@ -358,6 +358,20 @@ test('notes after a real sentence: the sentence plays, the audio stops where the
   session.finish()
 })
 
+test('a word that only ends in the notes is still spoken whole', (t) => {
+  const played = []
+  const { session } = harness(t, { audio: (data) => played.push(data) })
+  session.handle({ type: 'reply.started', reply_id: 'r1' })
+  session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  // As the API split a real reply: "now. (" is one word, spoken at 1.0 s; "call" starts at 2.5 s.
+  const words = [['Thank ', 0], ['you. ', 300], ['Bye ', 600], ['now. (', 1000], ['call ', 2500], ['end_call)', 2800]]
+  for (const [w, ms] of words) session.handle({ type: 'transcript.agent.delta', delta: w, start_ms: ms, reply_id: 'r1' })
+  for (let i = 0; i < 3; i++) session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  // Seconds starting at 0, 1000 and 2000 play ("now." included); 3000 does not.
+  assert.equal(played.length, 3)
+  session.finish()
+})
+
 test('notes that start before the audio already sent: the queued audio is dropped too', (t) => {
   const events = []
   const { session } = harness(t, { flush: () => events.push('flush'), muted: () => events.push('muted') })
