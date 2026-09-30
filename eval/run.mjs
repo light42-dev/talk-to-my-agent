@@ -181,7 +181,7 @@ async function runScenario(sc, { text }) {
       aAwaiting = true
       aAwaitingSince = Date.now()
     }
-    a.send(msg)
+    a?.send(msg)
   }
   const session = createCallSession({
     candidate: CANDIDATE,
@@ -216,6 +216,32 @@ async function runScenario(sc, { text }) {
         }
       },
       hangup: () => hangUp('agent'),
+      recover(info) {
+        note('agent', 'recover', { rescued: Boolean(info?.rescued) })
+        say('--', `no reply: asked the agent to go on${info?.rescued ? ' (details read by code)' : ''}`)
+      },
+      // Replies kept coming back empty. Like the page, open a fresh session
+      // that picks up the call.
+      async stuck(plan) {
+        note('agent', 'reconnect', { greeting: plan.greeting })
+        say('--', `voice session stuck, reconnecting: "${plan.greeting}"`)
+        const old = a
+        a = null
+        session.resetForNewSession()
+        old?.send({ type: 'session.end' })
+        setTimeout(() => old?.close(), 1500)
+        try {
+          const fresh = await openJsonSocket(wsUrl(await token(maxSeconds + 60)), agentHandlers())
+          if (finishing) return fresh.close()
+          await fresh.opened
+          a = fresh
+          const config = buildSession(CANDIDATE, APPLICATIONS, new Date())
+          a.send({ type: 'session.update', session: { ...config, system_prompt: config.system_prompt + plan.context, greeting: plan.greeting } })
+        } catch (error) {
+          setupError = setupError || `reconnect failed: ${error.message}`
+          hangUp('error')
+        }
+      },
     },
   })
 
@@ -227,8 +253,12 @@ async function runScenario(sc, { text }) {
     hangUp(`${who} session closed`)
   }
 
-  a = await openJsonSocket(wsUrl(tokenA), {
+  let agentGen = 0
+  function agentHandlers() {
+    const gen = ++agentGen
+    return {
     onEvent(msg) {
+      if (gen !== agentGen) return
       switch (msg.type) {
         case 'session.ready':
           aReady = true
@@ -261,13 +291,17 @@ async function runScenario(sc, { text }) {
         default:
           break
       }
+      if (msg.type === 'reply.done') note('agent', 'reply.done', { status: msg.status })
       session.handle(msg)
     },
     onClose() {
+      if (gen !== agentGen) return
       endedA.resolve()
       lost('agent', aReady)
     },
-  })
+    }
+  }
+  a = await openJsonSocket(wsUrl(tokenA), agentHandlers())
 
   // --- The simulated caller: a second session with its own voice.
   let bReady = false
@@ -360,8 +394,8 @@ async function runScenario(sc, { text }) {
     } else if (forA.length && bIdle() && aIdle()) {
       const lines = forA.splice(0)
       for (const line of lines) session.addCallerLine(line)
-      a.send({ type: 'conversation.message', role: 'user', content: lines.join(' ') })
-      a.send({ type: 'reply.create' })
+      a?.send({ type: 'conversation.message', role: 'user', content: lines.join(' ') })
+      a?.send({ type: 'reply.create' })
       turnStart = Date.now()
     }
   }, 150)
@@ -420,6 +454,7 @@ async function runScenario(sc, { text }) {
     outcome: result.outcome,
     latencies,
     billed,
+    stats: session.stats,
     receipt: result.receipt ? { to: result.receipt.to, subject: result.receipt.subject, text: result.receipt.text } : null,
     briefing: result.briefing?.text || null,
     verdict: result.verdict,
@@ -514,7 +549,7 @@ function writeResults(runs, dir) {
     const email = byName(r, 'email')
     const scam = byName(r, 'scam check')
     const audit = byName(r, 'nothing made up')
-    return `| ${r.id} | ${r.title} | ${mark(byName(r, 'outcome')?.ok)} ${r.outcome} | ${f.length ? `${f.filter((c) => c.ok).length}/${f.length}` : '–'} | ${email ? mark(email.ok) : '–'} | ${scam ? `${mark(scam.ok)} ${scam.detail}` : '–'} | ${audit ? mark(audit.ok) : '–'} | ${mmss(r.seconds)} | ${pct(r.latencies, 50) ?? '–'} ms |`
+    return `| ${r.id} | ${r.title} | ${mark(byName(r, 'outcome')?.ok)} ${r.outcome} | ${f.length ? `${f.filter((c) => c.ok).length}/${f.length}` : '–'} | ${email ? mark(email.ok) : '–'} | ${scam ? `${mark(scam.ok)} ${scam.detail}` : '–'} | ${audit ? mark(audit.ok) : '–'} | ${r.stats ? `${r.stats.recoveries} nudge${r.stats.recoveries === 1 ? '' : 's'}, ${r.stats.reconnects} reconnect${r.stats.reconnects === 1 ? '' : 's'}` : '–'} | ${mmss(r.seconds)} | ${pct(r.latencies, 50) ?? '–'} ms |`
   })
   const failures = runs.flatMap((r) => r.checks.filter((c) => !c.ok).map((c) => `- **${r.id}**, ${c.name}: ${c.detail}`))
 
@@ -522,11 +557,11 @@ function writeResults(runs, dir) {
 
 Maya's agent took **${runs.length} calls** from simulated callers on the real AssemblyAI Voice Agent API on ${new Date().toISOString().slice(0, 10)}, with ${mode}. Each caller is a second Voice Agent session with its own voice, facts and behavior (\`eval/scenarios.mjs\`). Maya's agent ran the same session setup and call logic as the demo page. Every check is computed by code from the call's final state (\`eval/run.mjs\`), not judged by a model.
 
-| Call | What it tests | Outcome | Facts right | Email | Scam check | Nothing made up | Length | Reply latency (median) |
-|---|---|---|---|---|---|---|---|---|
+| Call | What it tests | Outcome | Facts right | Email | Scam check | Nothing made up | Picked up after a dropped reply | Length | Reply latency (median) |
+|---|---|---|---|---|---|---|---|---|---|
 ${rows.join('\n')}
 
-**Totals:** ${runs.filter((r) => r.ok).length} of ${runs.length} calls passed every check. Outcomes right: ${runs.filter((r) => byName(r, 'outcome')?.ok).length}/${runs.length}. Facts right: ${facts.filter((c) => c.ok).length}/${facts.length}. Emails right: ${emails.filter((c) => c.ok).length}/${emails.length}. Scams blocked: ${scams.filter((r) => r.outcome === 'blocked').length}/${scams.length}. Made-up claims about Maya: ${unsupported}.
+**Totals:** ${runs.filter((r) => r.ok).length} of ${runs.length} calls passed every check. Outcomes right: ${runs.filter((r) => byName(r, 'outcome')?.ok).length}/${runs.length}. Facts right: ${facts.filter((c) => c.ok).length}/${facts.length}. Emails right: ${emails.filter((c) => c.ok).length}/${emails.length}. Scams blocked: ${scams.filter((r) => r.outcome === 'blocked').length}/${scams.length}. Made-up claims about Maya: ${unsupported}. Dropped replies picked up: ${runs.reduce((n, r) => n + (r.stats?.recoveries || 0), 0)} nudges and ${runs.reduce((n, r) => n + (r.stats?.reconnects || 0), 0)} fresh sessions.
 
 **Reply latency:** median ${pct(lat, 50) ?? '–'} ms, p90 ${pct(lat, 90) ?? '–'} ms over ${lat.length} turns, measured from the API's end-of-speech event to the first audio of the agent's reply, including tool calls.
 

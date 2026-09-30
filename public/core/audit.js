@@ -116,7 +116,9 @@ export function auditClaims({ candidate, state, transcript }) {
         unsupported.push({ type: 'commitment', text: s, detail: `the agent cannot accept or agree to anything for ${candidate.firstName}` })
       }
 
-      if (!state.booking && /\b(you'?re (all )?(booked|set)|i'?ve booked|is booked|on (her|maya'?s) calendar)\b/i.test(s)) {
+      // "You're on her calendar" claims a booking; "before I get you on her
+      // calendar" does not.
+      if (!state.booking && /\b(you'?re (all )?(booked|set)|i'?ve booked|is booked|(you'?re|you are|it'?s|that'?s|is) (now )?on (her|maya'?s) calendar)\b/i.test(s)) {
         unsupported.push({ type: 'booking', text: s, detail: 'the agent said a time was booked, but nothing was booked' })
       }
 

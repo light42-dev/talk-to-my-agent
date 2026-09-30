@@ -304,3 +304,11 @@ test('the decision date is worked out by code from the caller’s words', () => 
   assert.equal(s.details.decisionDate, null, 'a correction without a date clears the old date')
   assert.equal(s.details.decisionText, 'by the end of next week')
 })
+
+test('audit: asking to get the caller on her calendar is not a booking claim', () => {
+  const s = newCall()
+  const lines = (text) => [{ who: 'agent', text }]
+  const claims = (text) => finalizeCall({ candidate: CANDIDATE, state: s, transcript: lines(text) }).audit.unsupported.filter((u) => u.type === 'booking')
+  assert.equal(claims("Thanks, Jen. Before I get you on her calendar, what's the pay range?").length, 0)
+  assert.equal(claims("Great, you're on her calendar for Thursday at noon.").length, 1)
+})
