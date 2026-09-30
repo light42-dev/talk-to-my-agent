@@ -2,6 +2,8 @@
 
 **An AI voice agent that answers recruiters' calls for job seekers.**
 
+**Try it:** https://talk-to-my-agent-umber.vercel.app (use Chrome and headphones)
+
 ![Talk to My Agent: an AI voice agent that answers recruiters' calls for job seekers](docs/cover.png)
 
 Actors and athletes have an agent who takes the first call about a job and asks about money first. Job seekers take those calls alone, often at work and unprepared, and afterwards nothing the recruiter said is in writing.
@@ -28,7 +30,7 @@ Every voice agent in hiring today works for the employer. This one works for the
 
 ## Try it
 
-Open the app, press **Call Maya's agent**, and talk like a recruiter. The "Try it as…" cards give four scripts: a real recruiter, a recruiter who hides the pay, a low offer from an agency, and a job scammer. Use headphones and Chrome.
+Open [the app](https://talk-to-my-agent-umber.vercel.app), press **Call Maya's agent**, and talk like a recruiter. The "Try it as…" cards give four scripts: a real recruiter, a recruiter who hides the pay, a low offer from an agency, and a job scammer. Use headphones and Chrome.
 
 Maya Chen and every company in the demo are fictional.
 
