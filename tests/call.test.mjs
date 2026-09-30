@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { createCallSession } from '../public/core/call.js'
+import { RESUME_TEXT, STALL_MS, createCallSession } from '../public/core/call.js'
 import { APPLICATIONS, CANDIDATE } from '../public/core/candidate.js'
 
 const ONE_SECOND = Buffer.alloc(48000).toString('base64') // 1 s of 24 kHz PCM16
@@ -35,6 +35,7 @@ function harness(t) {
 }
 
 const toolResults = (sent) => sent.filter((m) => m.type === 'tool.result')
+const creates = (sent) => sent.filter((m) => m.type === 'reply.create')
 
 test('a red flag the agent ignores rides on the pending tool result, not a second reply', (t) => {
   const { session, sent, reply } = harness(t)
@@ -83,7 +84,7 @@ test('turns end fast until the agent asks for an email, then it waits for the wh
   const modeUpdates = () => sent.filter((m) => m.type === 'session.update' && m.session?.input?.transcription_mode)
   reply('r1', { text: 'Thanks, Jen.', tools: [['find_application', { company: 'Northwind Analytics' }]] })
   assert.equal(modeUpdates().length, 0, 'no switch while screening')
-  reply('r2', { text: 'Got it.', tools: [['record_details', { pay_min: 80000, pay_max: 90000, pay_unit: 'year', pay_basis: 'base' }]] })
+  reply('r2', { text: 'Got it.', tools: [['record_details', { pay_min: 80000, pay_max: 90000, pay_unit: 'year', pay_basis: 'base', work_mode: 'remote', interview_rounds: 3, decision_when: 'next week' }]] })
   assert.equal(modeUpdates().length, 0, 'no switch while recording details')
   reply('r3', { text: 'Thanks.', tools: [['confirm_details', { scope: 'details', confirmed: true }]] })
   const updates = modeUpdates()
@@ -108,5 +109,67 @@ test('a sound from the caller does not cut the agent off; a real interruption do
   assert.equal(flushes, 0, 'an "uh-huh" or noise keeps the audio playing')
   session.handle({ type: 'reply.done', reply_id: 'r1', status: 'interrupted' })
   assert.equal(flushes, 1, 'the server-confirmed interruption stops it')
+  session.finish()
+})
+
+test('a reply cut off by a noise, with nothing said after it, is picked up again after a quiet spell', (t) => {
+  const { session, sent, advance } = harness(t)
+  session.handle({ type: 'reply.started', reply_id: 'r1' })
+  session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  session.handle({ type: 'tool.call', call_id: 'c1', name: 'find_application', arguments: { company: 'Northwind' } })
+  session.handle({ type: 'input.speech.started' })
+  session.handle({ type: 'reply.done', reply_id: 'r1', status: 'interrupted' })
+  session.handle({ type: 'input.speech.stopped' })
+  assert.equal(toolResults(sent).length, 0, 'the cut-off reply drops its results, as the docs say')
+  advance(STALL_MS - 100)
+  assert.equal(creates(sent).length, 0, 'not before the quiet spell')
+  advance(200)
+  assert.equal(creates(sent).length, 1)
+  assert.equal(creates(sent)[0].instructions, RESUME_TEXT)
+  assert.equal(session.stats.recoveries, 1)
+  session.finish()
+})
+
+test('a caller line the server never answers gets an answer', (t) => {
+  const { session, sent, advance, reply } = harness(t)
+  reply('r1', { text: 'Who am I speaking with?' })
+  advance(1000)
+  session.handle({ type: 'input.speech.started' })
+  session.handle({ type: 'input.speech.stopped' })
+  session.handle({ type: 'transcript.user', text: 'Hi, this is Jen from Northwind.' })
+  advance(STALL_MS + 100)
+  assert.equal(creates(sent).length, 1)
+  session.finish()
+})
+
+test('no nudge while the caller is thinking or talking, or once the server answers', (t) => {
+  const { session, sent, advance, reply } = harness(t)
+  reply('r1', { text: "What's the pay range?" })
+  advance(20000)
+  assert.equal(creates(sent).length, 0, 'after a question, the silence is the caller’s')
+  session.handle({ type: 'input.speech.started' })
+  advance(12000)
+  assert.equal(creates(sent).length, 0, 'not while the caller is talking')
+  session.handle({ type: 'input.speech.stopped' })
+  session.handle({ type: 'transcript.user', text: "It's 115 to 135 base." })
+  advance(1500)
+  reply('r2', { text: 'Thank you.', tools: [['record_details', { pay_min: 115000, pay_max: 135000, pay_unit: 'year', pay_basis: 'base' }]] })
+  advance(1000 + 800)
+  reply('r3', { text: 'Is it remote, hybrid, or on-site?' })
+  advance(30000)
+  assert.equal(creates(sent).length, 0)
+  session.finish()
+})
+
+test('tool results that start no reply are followed up after the agent’s audio, a few times at most', (t) => {
+  const { session, sent, advance, reply } = harness(t)
+  reply('r1', { text: 'Thanks, Jen.', tools: [['find_application', { company: 'Northwind' }]] })
+  assert.equal(toolResults(sent).length, 1)
+  advance(1000 + STALL_MS - 200) // 1 s of audio still playing, then the quiet spell
+  assert.equal(creates(sent).length, 0)
+  advance(400)
+  assert.equal(creates(sent).length, 1)
+  advance(60000)
+  assert.ok(creates(sent).length <= 4, 'bounded')
   session.finish()
 })

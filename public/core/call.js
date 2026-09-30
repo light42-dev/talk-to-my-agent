@@ -23,14 +23,38 @@ function nudgeText(flag, firstName) {
   return `The caller just ${flag.label}. Do not continue the screening. Say calmly: "${firstName} doesn't pay for job opportunities or share personal details before a written offer, so I'll end the call here. Take care." Then call end_call with reason scam.`
 }
 
-export function createCallSession({ candidate, applications, send, hooks = {}, now = () => Date.now() }) {
+// The server normally starts a reply within 1 to 2 seconds. If the line stays
+// quiet this long while the agent owes the caller a reply, ask for one. This
+// covers a reply cut off by a noise (its tool results are dropped with it and
+// the server waits for the caller, who is waiting for the agent).
+export const STALL_MS = 4000
+const MAX_RECOVERIES = 4
+export const RESUME_TEXT =
+  'Carry on from where the call stopped. If the caller said something you have not answered, answer it. If you were cut off, say your last point again in one short sentence. If you were waiting for a tool result, call that tool again.'
+
+export function createCallSession({ candidate, applications, send: sendRaw, hooks = {}, now = () => Date.now(), playoutLagMs = () => 0 }) {
   const emit = (name, ...args) => hooks[name]?.(...args)
   const state = createCallState(candidate, applications, new Date(now()))
+  const startedAt = now()
+  // Every message out goes through here, so the watchdog knows when the agent
+  // has been asked to speak (tool results start the next reply on their own).
+  const send = (msg) => {
+    if (msg.type === 'tool.result' || msg.type === 'reply.create') expectReply()
+    if (msg.type !== 'input.audio') record('out', msg.type, msg.type === 'tool.result' ? msg.call_id : undefined)
+    return sendRaw(msg)
+  }
   const call = {
     state,
     transcript: [],
     clock: createPlayoutClock(now),
     queue: createToolQueue(send),
+    // The last 300 protocol events, without audio, for debugging a call.
+    log: [],
+    stats: { cutOffs: 0, recoveries: 0 },
+    owesReply: false,
+    quietSince: 0,
+    callerSpeakingSince: null,
+    stallTimer: null,
     ready: false,
     sessionId: null,
     replyActive: false,
@@ -47,11 +71,53 @@ export function createCallSession({ candidate, applications, send, hooks = {}, n
     finish,
   }
 
+  function record(dir, type, detail) {
+    call.log.push({ ms: now() - startedAt, dir, type, ...(detail === undefined ? {} : { detail }) })
+    if (call.log.length > 300) call.log.shift()
+  }
+
+  // How long until the agent's queued audio has played.
+  const playoutMs = () => {
+    const left = call.clock.remainingMs()
+    return left > 0 ? left + playoutLagMs() : 0
+  }
+
   // Hang up once the goodbye has played. hooks.hangup ends the call.
   function scheduleHangup() {
     if (call.hangupTimer || call.finished) return
     emit('status', 'ending', 'hanging up')
-    call.hangupTimer = setTimeout(() => emit('hangup', 'agent'), call.clock.remainingMs() + 600)
+    call.hangupTimer = setTimeout(() => emit('hangup', 'agent'), playoutMs() + 600)
+  }
+
+  // ---- stall watchdog ----
+  function expectReply() {
+    call.owesReply = true
+    heard()
+  }
+
+  // Something happened on the line. The quiet starts once the agent's queued
+  // audio has played.
+  function heard() {
+    call.quietSince = now() + playoutMs()
+    if (!call.owesReply || call.finished) return
+    clearTimeout(call.stallTimer)
+    call.stallTimer = setTimeout(checkStall, call.quietSince + STALL_MS - now())
+  }
+
+  function checkStall() {
+    call.stallTimer = null
+    if (call.finished || call.endRequested || !call.owesReply || call.replyActive) return
+    const speaking = call.callerSpeakingSince !== null && now() - call.callerSpeakingSince < 30000
+    const wait = speaking ? STALL_MS : call.quietSince + STALL_MS - now()
+    if (wait > 0) {
+      call.stallTimer = setTimeout(checkStall, wait)
+      return
+    }
+    call.owesReply = false
+    if (call.stats.recoveries >= MAX_RECOVERIES) return
+    call.stats.recoveries++
+    emit('recover', { log: call.log.slice(-12) })
+    send({ type: 'reply.create', instructions: RESUME_TEXT })
   }
 
   function onCallerLine(text) {
@@ -71,6 +137,9 @@ export function createCallSession({ candidate, applications, send, hooks = {}, n
 
   function handle(msg) {
     if (call.finished) return
+    if (!['reply.audio', 'transcript.user.delta', 'transcript.agent.delta'].includes(msg.type)) {
+      record('in', msg.type, msg.status || msg.name || (msg.interrupted ? 'interrupted' : undefined))
+    }
     switch (msg.type) {
       case 'session.ready':
         call.ready = true
@@ -84,7 +153,14 @@ export function createCallSession({ candidate, applications, send, hooks = {}, n
         // is a real interruption. When it is, reply.done arrives with status
         // "interrupted" and the audio is flushed there.
         call.queue.event(msg.type)
+        call.callerSpeakingSince = now()
+        heard()
         emit('status', 'listening', 'listening')
+        break
+
+      case 'input.speech.stopped':
+        call.callerSpeakingSince = null
+        heard()
         break
 
       case 'reply.started':
@@ -93,6 +169,8 @@ export function createCallSession({ candidate, applications, send, hooks = {}, n
         call.replyHadAudio = false
         call.replyText = ''
         call.toolsThisReply = []
+        call.owesReply = false
+        clearTimeout(call.stallTimer)
         emit('status', 'speaking', 'agent speaking')
         break
 
@@ -108,7 +186,14 @@ export function createCallSession({ candidate, applications, send, hooks = {}, n
         if (interrupted) {
           emit('flush')
           call.clock.clear()
+          call.stats.cutOffs++
         }
+        emit('replyEnd', msg.status)
+        // A finished reply leaves the next move to the caller, unless tool
+        // results go out below (they start the next reply). A cut-off reply
+        // still owes the caller an answer.
+        call.owesReply = interrupted
+        heard()
         // The agent asked to hang up and has said goodbye: drop any unsent
         // tool results so it doesn't start talking again, then hang up once
         // the goodbye has played. With no transcript yet, audio counts.
@@ -149,6 +234,9 @@ export function createCallSession({ candidate, applications, send, hooks = {}, n
 
       case 'transcript.user':
         onCallerLine(msg.text || '')
+        // A line said over the agent's reply is its own business; one said
+        // after it needs an answer.
+        if (!call.replyActive && String(msg.text || '').trim()) expectReply()
         break
 
       case 'transcript.agent.delta':
@@ -207,6 +295,7 @@ export function createCallSession({ candidate, applications, send, hooks = {}, n
     call.finished = true
     clearTimeout(call.hangupTimer)
     clearTimeout(call.endFallback)
+    clearTimeout(call.stallTimer)
   }
 
   return call

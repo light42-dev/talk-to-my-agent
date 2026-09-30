@@ -19,10 +19,20 @@ const el = (tag, props = {}, ...children) => {
 }
 
 const WIRE_RATE = 24_000
-// The agent's audio arrives in real time, in 10 ms pieces. Playback waits for a
-// small cushion so a network hiccup doesn't leave the speaker with a gap.
-const PLAYBACK_CUSHION_MS = 200
-const PLAYBACK_MAX_WAIT_MS = 300
+// The agent's audio arrives in real time, in 10 ms pieces, with only about
+// 100 ms sent ahead. Playback keeps a cushion so a network hiccup doesn't cut
+// words. It starts small and grows each time a gap still gets through, and the
+// size it reached is kept for the next call.
+const CUSHION_START_MS = 400
+const CUSHION_STEP_MS = 200
+const CUSHION_MAX_MS = 1000
+const CUSHION_KEY = 'talk-to-my-agent.cushion-ms'
+let cushionMs = CUSHION_START_MS
+try {
+  const saved = Number(localStorage.getItem(CUSHION_KEY))
+  // A little smaller than last time, in case the network got better.
+  if (saved) cushionMs = Math.min(CUSHION_MAX_MS, Math.max(CUSHION_START_MS, saved - 100))
+} catch {}
 // Microphone audio goes out in 20 ms frames instead of one message per 5 ms.
 const CAPTURE_FRAME_SAMPLES = 480
 const params = new URLSearchParams(location.search)
@@ -251,8 +261,12 @@ function describeTool(name, args, result) {
       return `recorded ${result.recorded?.join(', ') || 'details'}${result.fit && !result.fit.fits ? ' · not a fit' : ''}`
     case 'record_contact':
       return result.ok ? `contact: ${[result.name, result.email].filter(Boolean).join(' · ')}` : 'contact rejected: incomplete'
-    case 'confirm_details':
-      return args.confirmed ? `caller confirmed the ${args.scope} details` : `caller corrected the ${args.scope}`
+    case 'confirm_details': {
+      const what = args.scope === 'contact' ? 'their email' : 'the role details'
+      if (!args.confirmed) return `caller corrected ${what}`
+      if (!result.ok) return `not recorded yet, so the agent was told to record ${what} first`
+      return `caller confirmed ${what}${result.slots ? ` · offered: ${result.slots.map((s) => s.time).join(' / ')}` : ''}`
+    }
     case 'get_open_slots':
       return result.ok ? `offered: ${result.slots.slice(0, 2).map((s) => s.time).join(' / ')}` : `no times offered: ${result.next}`
     case 'book_slot':
@@ -296,18 +310,30 @@ const CAPTURE_WORKLET = `
   registerProcessor('capture', CaptureProcessor);
 `
 
+// Messages in: PCM16 audio, 'end' when the reply has sent all its audio, and
+// 'stop' to drop everything (the caller interrupted). A reply that runs dry and
+// then gets more audio had a gap the caller heard, so the cushion grows.
 const PLAYBACK_WORKLET = `
   class PlaybackProcessor extends AudioWorkletProcessor {
-    constructor() {
+    constructor(options) {
       super();
+      const ms = (v) => Math.round(sampleRate * v / 1000);
       this._ring = new Float32Array(sampleRate * 30); this._writePos = 0; this._readPos = 0; this._available = 0;
       this._step = ${WIRE_RATE} / sampleRate; this._rsPos = 0; this._rsPrev = 0; this._drained = false;
-      this._cushion = Math.round(sampleRate * ${PLAYBACK_CUSHION_MS} / 1000); this._maxWait = Math.round(sampleRate * ${PLAYBACK_MAX_WAIT_MS} / 1000);
-      this._playing = false; this._waited = 0;
+      this._cushion = ms((options && options.processorOptions && options.processorOptions.cushionMs) || ${CUSHION_START_MS});
+      this._grow = ms(${CUSHION_STEP_MS}); this._max = ms(${CUSHION_MAX_MS}); this._grace = ms(200); this._fadeLen = ms(4);
+      this._playing = false; this._waited = 0; this._open = false; this._gap = false; this._last = 0; this._fade = 0;
       this.port.onmessage = (e) => {
-        if (e.data === 'stop') { this._writePos = this._readPos = this._available = 0; this._rsPos = this._rsPrev = 0; this._playing = false; this._waited = 0; return; }
+        if (e.data === 'stop') { this._writePos = this._readPos = this._available = 0; this._rsPos = this._rsPrev = 0; this._playing = false; this._waited = 0; this._open = false; this._gap = false; return; }
+        if (e.data === 'end') { this._open = false; this._gap = false; return; }
         const int16 = new Int16Array(e.data);
         if (!int16.length) return;
+        if (this._gap) {
+          this._gap = false;
+          this._cushion = Math.min(this._max, this._cushion + this._grow);
+          this.port.postMessage({ gap: true, cushionMs: Math.round(this._cushion * 1000 / sampleRate) });
+        }
+        this._open = true;
         if (this._drained) { this._rsPrev = 0; this._rsPos = 0; this._drained = false; }
         if (this._step === 1) { for (let i = 0; i < int16.length; i++) this._push(int16[i] / 32768); return; }
         const n = int16.length; let pos = this._rsPos;
@@ -320,11 +346,21 @@ const PLAYBACK_WORKLET = `
       const output = outputs[0]; const out = output[0]; const cap = this._ring.length;
       if (!this._playing && this._available > 0) {
         this._waited += out.length;
-        if (this._available >= this._cushion || this._waited >= this._maxWait) { this._playing = true; this._waited = 0; }
+        // Start once the cushion is full, once the reply has sent everything,
+        // or if the audio is coming in slower than it plays.
+        if (this._available >= this._cushion || !this._open || this._waited >= this._cushion + this._grace) { this._playing = true; this._waited = 0; this._fade = 0; }
       }
       for (let i = 0; i < out.length; i++) {
-        if (this._playing && this._available > 0) { out[i] = this._ring[this._readPos]; this._readPos = (this._readPos + 1) % cap; this._available--; }
-        else { out[i] = 0; if (this._playing) { this._playing = false; this._drained = true; } }
+        if (this._playing && this._available > 0) {
+          let v = this._ring[this._readPos]; this._readPos = (this._readPos + 1) % cap; this._available--;
+          // A 4 ms fade-in after silence, and a quick fade-out when the buffer
+          // runs dry, so a gap doesn't click.
+          if (this._fade < this._fadeLen) { v *= this._fade / this._fadeLen; this._fade++; }
+          out[i] = v; this._last = v;
+        } else {
+          this._last *= 0.9; out[i] = this._last;
+          if (this._playing) { this._playing = false; this._drained = true; if (this._open) this._gap = true; }
+        }
       }
       for (let ch = 1; ch < output.length; ch++) output[ch].set(out);
       return true;
@@ -333,14 +369,14 @@ const PLAYBACK_WORKLET = `
   registerProcessor('playback', PlaybackProcessor);
 `
 
-async function addWorklet(ctx, code, name) {
+async function addWorklet(ctx, code, name, options) {
   const url = URL.createObjectURL(new Blob([code], { type: 'application/javascript' }))
   try {
     await ctx.audioWorklet.addModule(url)
   } finally {
     URL.revokeObjectURL(url)
   }
-  return new AudioWorkletNode(ctx, name)
+  return new AudioWorkletNode(ctx, name, options)
 }
 
 async function listMics() {
@@ -398,6 +434,13 @@ function pageHooks() {
     flush() {
       call.playback?.port.postMessage('stop')
     },
+    replyEnd() {
+      call.playback?.port.postMessage('end')
+    },
+    recover(detail) {
+      console.info('[voice agent] no reply, asking the agent to go on', detail)
+      addLine('tool', 'the line went quiet, so we asked the agent to go on')
+    },
     audio(base64) {
       const raw = atob(base64)
       const bytes = new Uint8Array(raw.length)
@@ -417,6 +460,7 @@ function pageHooks() {
     },
     line(who, text, msg) {
       if (who === 'agent') printedReply = msg?.reply_id ?? printedReply
+      if (who === 'agent' && msg?.interrupted) text = text.trim() ? `${text.trim()} (cut off)` : '(cut off)'
       addLine(who, text)
     },
     tool(name, args, result) {
@@ -453,7 +497,15 @@ async function startCall() {
   window.__call = c
   const live = () => call === c && !c.finished
   const send = (msg) => c.ws?.readyState === 1 && c.ws.send(JSON.stringify(msg))
-  c.session = createCallSession({ candidate: CANDIDATE, applications: APPLICATIONS, send, hooks: pageHooks() })
+  c.gaps = 0
+  c.session = createCallSession({
+    candidate: CANDIDATE,
+    applications: APPLICATIONS,
+    send,
+    hooks: pageHooks(),
+    // Audio plays this much later than it arrives.
+    playoutLagMs: () => cushionMs,
+  })
   renderFacts(c.session.state)
   renderShield(c.session.state, c.session.transcript)
   $('call-btn').disabled = true
@@ -468,7 +520,16 @@ async function startCall() {
     c.captureCtx = new AudioContext({ sampleRate: WIRE_RATE })
     c.playbackCtx = new AudioContext({ sampleRate: WIRE_RATE })
     await Promise.all([c.captureCtx.resume(), c.playbackCtx.resume()])
-    c.playback = await addWorklet(c.playbackCtx, PLAYBACK_WORKLET, 'playback')
+    c.playback = await addWorklet(c.playbackCtx, PLAYBACK_WORKLET, 'playback', { processorOptions: { cushionMs } })
+    c.playback.port.onmessage = ({ data }) => {
+      if (!data?.gap) return
+      c.gaps++
+      cushionMs = data.cushionMs
+      console.info(`[voice agent] the agent's audio had a gap; playback now keeps ${cushionMs} ms in hand`)
+      try {
+        localStorage.setItem(CUSHION_KEY, String(cushionMs))
+      } catch {}
+    }
     c.playback.connect(c.playbackCtx.destination)
     const deviceId = $('mic').value
     c.mic = await navigator.mediaDevices.getUserMedia({
@@ -543,6 +604,7 @@ async function endCall(why) {
   call.finished = true
   call.session.finish()
   clearInterval(call.timer)
+  console.info('[voice agent] call stats', { audioGaps: call.gaps, cushionMs, ...call.session.stats })
   const { ws } = call
   const { state, transcript } = call.session
   if (ws?.readyState === 1) {

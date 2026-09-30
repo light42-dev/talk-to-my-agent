@@ -90,6 +90,7 @@ test('an hourly contract below her floor and an on-site role in another city are
 
 test('booking is refused until the read-back is confirmed', () => {
   const s = newCall()
+  handleToolCall(s, 'find_application', { company: 'Northwind' })
   handleToolCall(s, 'record_details', { pay_min: 130000, pay_max: 150000, pay_unit: 'year', pay_basis: 'base', work_mode: 'remote', interview_rounds: 3, decision_when: 'next week' })
   assert.equal(handleToolCall(s, 'book_slot', { slot_id: 'slot_1' }).ok, false)
   handleToolCall(s, 'confirm_details', { confirmed: true, scope: 'details' })
@@ -147,8 +148,9 @@ test('scam rules: hard red flags are caught in the caller’s own words', () => 
 
 test('a rule flag blocks booking', () => {
   const s = newCall()
+  handleToolCall(s, 'find_application', { company: 'Northwind' })
   handleToolCall(s, 'record_details', { pay_min: 130000, pay_max: 150000, pay_unit: 'year', pay_basis: 'base', work_mode: 'remote', interview_rounds: 3, decision_when: 'next week' })
-  handleToolCall(s, 'confirm_details', { confirmed: true, scope: 'details' })
+  assert.equal(handleToolCall(s, 'confirm_details', { confirmed: true, scope: 'details' }).ok, true)
   addRuleFlag(s, { code: 'asks_payment', evidence: 'pay a fee for the starter kit' })
   assert.equal(handleToolCall(s, 'get_open_slots', {}).ok, false)
 })
@@ -246,4 +248,50 @@ test('playout clock counts down queued agent audio', () => {
   assert.equal(clock.remainingMs(), 1500)
   clock.clear()
   assert.equal(clock.remainingMs(), 0)
+})
+
+test('an agent that read the details back from memory is sent to record them first', () => {
+  const s = newCall()
+  handleToolCall(s, 'find_application', { company: 'Northwind' })
+  const r = handleToolCall(s, 'confirm_details', { confirmed: true, scope: 'details' })
+  assert.equal(r.ok, false)
+  assert.match(r.next, /Call record_details now/)
+  assert.equal(s.detailsConfirmed, false)
+  assert.equal(handleToolCall(s, 'get_open_slots', {}).ok, false)
+})
+
+test('a missing detail sends the agent back once; if the caller does not know, the second try goes through', () => {
+  const s = newCall()
+  handleToolCall(s, 'find_application', { company: 'Northwind' })
+  handleToolCall(s, 'record_details', { pay_min: 130000, pay_max: 150000, pay_unit: 'year', pay_basis: 'base', work_mode: 'remote', decision_when: 'next week' })
+  const first = handleToolCall(s, 'confirm_details', { confirmed: true, scope: 'details' })
+  assert.equal(first.ok, false)
+  assert.deepEqual(first.missing, ['number of interview rounds'])
+  const second = handleToolCall(s, 'confirm_details', { confirmed: true, scope: 'details' })
+  assert.equal(second.ok, true)
+  assert.equal(s.detailsConfirmed, true)
+})
+
+test('the confirmation carries her open times, so the agent never has to guess them', () => {
+  const s = newCall()
+  handleToolCall(s, 'find_application', { company: 'Northwind' })
+  handleToolCall(s, 'record_details', { pay_min: 115, pay_max: 135, pay_unit: 'year', pay_basis: 'base', work_mode: 'hybrid', office_location: 'Austin', office_days_per_week: 2, interview_rounds: 4, decision_date: '2026-10-20' })
+  const r = handleToolCall(s, 'confirm_details', { confirmed: true, scope: 'details' })
+  assert.equal(r.ok, true)
+  assert.equal(r.slots.length, 2)
+  for (const slot of r.slots) assert.ok(r.next.includes(slot.time), `${slot.time} is in the instruction`)
+  assert.match(r.next, /no others/)
+  // Asking again gives the same times, plus one more.
+  const more = handleToolCall(s, 'get_open_slots', {})
+  assert.deepEqual(more.slots.slice(0, 2), r.slots)
+  assert.equal(more.slots.length, 3)
+  assert.equal(handleToolCall(s, 'book_slot', { slot_id: r.slots[1].slot_id }).booked, r.slots[1].time)
+})
+
+test('the email read-back cannot be confirmed before an email is recorded', () => {
+  const s = bookedCall()
+  s.caller.email = null
+  const r = handleToolCall(s, 'confirm_details', { confirmed: true, scope: 'contact' })
+  assert.equal(r.ok, false)
+  assert.match(r.next, /record_contact/)
 })

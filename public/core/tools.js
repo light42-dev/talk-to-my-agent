@@ -313,6 +313,31 @@ const handlers = {
         next: 'Ask what needs correcting, record the correction, and read it back again.',
       }
     }
+    // What the caller confirms is what goes in the summary email, so it has
+    // to be recorded first. An agent that read details back from memory is
+    // sent to record them.
+    if (scope === 'contact' && !state.caller.email) {
+      return {
+        ok: false,
+        next: 'No email is recorded yet. Call record_contact with the email they gave, read it back the way the tool spells it, then call confirm_details with scope contact.',
+      }
+    }
+    if (scope === 'details') {
+      const recordedAny = ['pay', 'work', 'rounds', 'decision'].some((f) => state.status[f])
+      const missing = missingFields(state)
+      // Missing fields send the agent back once. If the caller really doesn't
+      // know, the second try goes through.
+      if (!recordedAny || (missing.length && !state.missingAllowed)) {
+        if (recordedAny) state.missingAllowed = true
+        return {
+          ok: false,
+          missing,
+          next: recordedAny
+            ? `Not recorded yet: ${missing.join(', ')}. If the caller told you, record it now (find_application for the company, record_details for the rest) and read back the sentence record_details gives you. If they don't know, call confirm_details again.`
+            : 'Nothing is recorded yet. Call record_details now with everything the caller told you about the pay, the work arrangement, the interview rounds and when they will decide. Then read back the sentence it gives you and ask if it is right.',
+        }
+      }
+    }
     const now = new Date().toISOString()
     const fields = scope === 'contact' ? ['contact'] : ['company', 'pay', 'work', 'rounds', 'decision']
     for (const field of fields) {
@@ -326,6 +351,7 @@ const handlers = {
     const fit = overallFit(state, state.candidate.rules)
     const flagged = state.scamFlags.length > 0
     let next
+    let slots
     if (scope === 'contact') {
       next = `Tell them a short written confirmation is on its way${state.booking ? ' with the calendar invite' : ''}, and that if they decide not to move forward, a short reply is enough. Then say goodbye and call end_call.`
     } else if (flagged) {
@@ -333,22 +359,21 @@ const handlers = {
     } else if (!fit.fits) {
       next = `Tell them kindly it is not a fit because ${fit.reasons.join(' and ')}, and that ${state.candidate.firstName} would be glad to talk if that changes. Then ask for the best email for a short written summary.`
     } else if (!state.booking) {
-      next = 'Call get_open_slots and offer the first two times.'
+      // The open times come with the confirmation, so the agent never has to
+      // guess them.
+      slots = offerSlots(state)
+      next = offerText(state, slots)
     } else {
       next = 'Ask for the best email for the written confirmation.'
     }
-    return { ok: true, scope, fit: fitSummary(fit), next }
+    return { ok: true, scope, fit: fitSummary(fit), ...(slots ? { slots } : {}), next }
   },
 
   get_open_slots(state) {
     const problem = bookingProblem(state)
     if (problem) return { ok: false, next: problem }
-    state.slots = openSlots(state.candidate, new Date(), 3)
-    return {
-      ok: true,
-      slots: state.slots.map((s) => ({ slot_id: s.id, time: s.label })),
-      next: 'Offer the first two times, then call book_slot with the one they choose.',
-    }
+    const slots = offerSlots(state, 3)
+    return { ok: true, slots, next: offerText(state, slots) }
   },
 
   book_slot(state, args) {
@@ -382,6 +407,22 @@ const handlers = {
     state.endReason = END_REASONS.includes(args.reason) ? args.reason : 'other'
     return { ok: true, next: 'If you have not said goodbye yet, say one short goodbye now. The line closes after you finish.' }
   },
+}
+
+// Her next open call times, worked out once per call so every tool offers the
+// same ones.
+function offerSlots(state, count = 2) {
+  if (!state.slots) state.slots = openSlots(state.candidate, new Date(), 3)
+  return state.slots.slice(0, count).map((s) => ({ slot_id: s.id, time: s.label }))
+}
+
+function offerText(state, slots) {
+  const first = state.candidate.firstName
+  const times = slots.map((s) => `"${s.time}"`).join(' or ')
+  const book = 'Then call book_slot with the slot_id of the one they choose.'
+  return slots.length > 2
+    ? `These are all of ${first}'s open times: ${times}. Offer only these, word for word. ${book} If none works, say ${first} will email other times.`
+    : `Offer these two times, word for word, and no others: ${times}. ${book} If neither works, call get_open_slots.`
 }
 
 function bookingProblem(state) {
