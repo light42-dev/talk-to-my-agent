@@ -68,6 +68,8 @@ With neither set, the page shows the email and the phone notification as preview
 - **Universal-3.5 Pro Realtime**, the speech-to-text inside the Voice Agent API, is what makes the summary email possible: salary figures, dates, names and email addresses spelled letter by letter have to be heard correctly before our code reads them back.
 - **Turn detection and barge-in**: the caller can interrupt at any time; interrupted replies drop their tool results, as the docs recommend.
 - **`reply.create`** lets our code make the agent speak, which is how the scam check ends a call even when the model missed the warning sign.
+- **Staying on the line.** Sometimes a reply comes back with nothing in it, usually after the caller says several details at once. When that happens, our code reads the details from the caller's own words, records them, and asks the agent to read them back. If replies keep coming back empty, the page opens a fresh session. That session first says a line our code wrote ("Sorry, the line cut out for a second. So that's… Did I get that right?"), and its prompt carries the call so far.
+- **Playback that adapts to the connection.** The agent's audio arrives in real time with only about 100 ms sent ahead. The page holds 0.4 s before playing and adds more after each gap the caller hears.
 
 ```mermaid
 flowchart LR
@@ -91,6 +93,7 @@ public/core/session.js                  prompt, greeting, tools, keyterms for se
 public/core/tools.js                    the nine tool handlers and the call state
 public/core/facts.js                    pay, work, email, phone, dates, time zones, fit
 public/core/scam.js                     signs of a job scam, checked in code
+public/core/extract.js                  role details read from the caller's words, in code
 public/core/audit.js                    after-call check for anything made up
 public/core/report.js                   outcome, summary email, calendar invite, phone notification
 public/core/call.js                     live-call logic shared by the page and the eval
