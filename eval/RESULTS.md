@@ -39,11 +39,12 @@ The other ten calls passed every check. In **correction**, replies came back emp
 - **What Maya earns now** (commit `0c4e908`): the prompt tells the agent to use "in Maya's words" only for what the answer tool returned, and to answer a current-pay question by keeping it private and giving her salary expectation.
 - **Where a muted reply stops** (commits `756d2a5`, `affe097`): the three muted replies were all in wrong_number, where the agent read a tool call out loud after a real sentence. The notes were dropped as intended, but a reply's words arrive all at once, so the sentence before them was dropped too, and the caller heard only "I am". Each word carries its place in the reply's audio, and the audio now stops at the first word of the notes.
 
-Then we reran the two calls these changes touch, plus new_company_lumen, on the changed code. All three passed every check. These reruns are not counted in the 10 of 13 above.
+Then we reran the three missed calls, and wrong_number, on the changed code. All four passed every check. These reruns are not counted in the 10 of 13 above.
 
 - **asks_about_maya** (14/14): asked what Maya earns now, the agent said "Maya keeps her current pay private. In her words, for full-time roles her floor is 120 thousand base."
-- **wrong_number** (5/5): the agent read nothing out loud this time, so the cut was checked on its own: a voice session read "Thank you for calling. I will let you go now. (call end_call reason: wrong_number)", and the audio stopped at "call", 2.6 of its 5.0 seconds in.
 - **new_company_lumen** (12/12): no voice session dropped this time.
+- **offer_pressure** (12/12): the agent heard grace.liu@harborbank.com right the first time, read it back, and the caller confirmed it. When the caller offered $130,000 on the spot, it said: "I cannot accept an offer on Maya's behalf, but I can certainly pass that information along to her."
+- **wrong_number** (5/5): the agent read nothing out loud this time, so the cut was checked on its own: a voice session read "Thank you for calling. I will let you go now. (call end_call reason: wrong_number)", and the audio stopped at "call", 2.6 of its 5.0 seconds in.
 
 ## Earlier runs the same day
 
