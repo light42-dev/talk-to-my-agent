@@ -37,12 +37,15 @@ export const RESUME_TEXT =
 
 // Now and then the model reads out its own notes ("Thinking Process: 1.
 // **Analyze the current state:** …") or a tool call ("(call end_call reason:
-// message_taken)") instead of talking to the caller: twice in about 200
-// replies in the eval. The words arrive while the first half second of their
-// audio is still in the page's cushion, so that audio is dropped before the
-// caller hears more than a syllable. A reply that is notes from its first
-// word is muted and, as there is no event to cancel a reply, a fresh session
-// takes over the call. After a real sentence, only the rest is dropped.
+// message_taken)") instead of talking to the caller: a few times in 300
+// replies in the eval. A reply's words arrive all at once, a few hundred
+// milliseconds after its first audio and each with its place in that audio
+// (start_ms), so the audio can stop exactly where the notes start. A reply
+// that is notes from its first word is muted and, as there is no event to
+// cancel a reply, a fresh session takes over the call. After a real
+// sentence, the sentence plays and only the rest is dropped.
+// Speaking rate of the agent's voice, for words that arrive without timing.
+const MS_PER_CHAR = 57
 export const NOT_SPEECH =
   /thinking process|<\/?think>|\*\*|\(\s*call\b|\b(?:find_application|record_details|record_contact|confirm_details|get_open_slots|book_slot|flag_scam|end_call|get_candidate_answer)\b/i
 
@@ -109,6 +112,11 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
     replyText: '',
     replyDraft: '',
     replyMuted: false,
+    // Where each word of the reply starts in its audio, and how much audio
+    // has arrived, so a partly muted reply stops at the right word.
+    replyWords: [],
+    replyAudioMs: 0,
+    replyCutMs: Infinity,
     toolsThisReply: [],
     endRequested: false,
     goodbyePending: false,
@@ -243,12 +251,20 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
     }
   }
 
-  // Notes after a real sentence: the sentence plays, the rest of the audio
-  // is dropped, and the caller answers the sentence.
-  function muteRest() {
+  // Notes after a real sentence: the sentence plays, the audio from the
+  // first word of the notes on is dropped, and the caller answers the
+  // sentence. If that audio is already queued, it goes, with what is left of
+  // the sentence.
+  function muteRest(index) {
+    const word = call.replyWords.filter((w) => w.at <= index).at(-1)
+    call.replyCutMs = Number.isFinite(word?.startMs) ? word.startMs : index * MS_PER_CHAR
     call.replyMuted = 'rest'
     call.stats.muted++
-    record('in', 'muted', 'rest')
+    record('in', 'muted', `from ${Math.round(call.replyCutMs)} ms`)
+    if (call.replyAudioMs > call.replyCutMs + 150) {
+      call.clock.clear()
+      emit('flush')
+    }
     emit('muted', { rest: true })
   }
 
@@ -320,18 +336,24 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
         call.replyText = ''
         call.replyDraft = ''
         call.replyMuted = false
+        call.replyWords = []
+        call.replyAudioMs = 0
+        call.replyCutMs = Infinity
         call.toolsThisReply = []
         call.owesReply = false
         clearTimeout(call.stallTimer)
         emit('status', 'speaking', 'agent speaking')
         break
 
-      case 'reply.audio':
-        if (call.replyMuted) break
+      case 'reply.audio': {
+        const from = call.replyAudioMs
+        call.replyAudioMs += audioSeconds(msg.data) * 1000
+        if (call.replyMuted === true || from >= call.replyCutMs) break
         emit('audio', msg.data)
         call.clock.add(audioSeconds(msg.data))
         call.replyHadAudio = true
         break
+      }
 
       case 'reply.done': {
         call.replyActive = false
@@ -400,10 +422,11 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
 
       case 'transcript.agent.delta': {
         if (call.replyMuted) break
+        call.replyWords.push({ at: call.replyDraft.length, startMs: msg.start_ms })
         call.replyDraft += msg.delta || ''
         const notes = NOT_SPEECH.exec(call.replyDraft)
         if (notes) {
-          if (call.replyDraft.slice(0, notes.index).trim()) muteRest()
+          if (call.replyDraft.slice(0, notes.index).trim()) muteRest(notes.index)
           else muteReply()
           break
         }
@@ -422,7 +445,7 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
             muteReply()
             break
           }
-          if (!call.replyMuted) muteRest()
+          if (!call.replyMuted) muteRest(notes.index)
         }
         call.replyText += `${text} `
         call.transcript.push({ who: 'agent', text, at: new Date(now()).toISOString() })

@@ -327,7 +327,7 @@ test('ordinary replies are never muted', (t) => {
   session.finish()
 })
 
-test('notes after a real sentence: the sentence plays, the rest of the audio is dropped, and nothing is owed', (t) => {
+test('notes after a real sentence: the sentence plays, the audio stops where the notes start, and nothing is owed', (t) => {
   const played = []
   const events = []
   const plans = []
@@ -340,18 +340,31 @@ test('notes after a real sentence: the sentence plays, the rest of the audio is 
   session.handle({ type: 'transcript.user', text: "Hi, this is Linda. I'm trying to order a large pepperoni pizza." })
   session.handle({ type: 'reply.started', reply_id: 'r1' })
   session.handle({ type: 'reply.audio', data: ONE_SECOND })
-  for (const w of "I see. Would you like to leave a message for Maya? ".split(/(?<= )/)) session.handle({ type: 'transcript.agent.delta', delta: w, reply_id: 'r1' })
-  session.handle({ type: 'reply.audio', data: ONE_SECOND })
-  for (const w of '(call end_call reason: message_taken)'.split(/(?<= )/)) session.handle({ type: 'transcript.agent.delta', delta: w, reply_id: 'r1' })
-  session.handle({ type: 'reply.audio', data: ONE_SECOND })
-  session.handle({ type: 'transcript.agent', text: 'I see. Would you like to leave a message for Maya? (call end_call reason: message_taken)', reply_id: 'r1' })
+  // All the words at once, each with where it starts in the reply's audio.
+  const words = "I see. Would you like to leave a message for Maya? (call end_call reason: message_taken)".split(/(?<= )/)
+  words.forEach((w, i) => session.handle({ type: 'transcript.agent.delta', delta: w, start_ms: i * 250, reply_id: 'r1' }))
+  for (let i = 0; i < 4; i++) session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  session.handle({ type: 'transcript.agent', text: words.join(''), reply_id: 'r1' })
   session.handle({ type: 'reply.done', reply_id: 'r1', status: 'completed' })
+  // "(call" is word 11: its audio starts at 2750 ms, so the seconds starting
+  // at 0, 1000 and 2000 play and the ones at 3000 and 4000 do not.
   assert.deepEqual(events, ['muted rest=true'], 'no flush: the sentence already in the cushion still plays')
-  assert.equal(played.length, 2)
+  assert.equal(played.length, 3)
   assert.equal(plans.length, 0)
   assert.equal(session.transcript.at(-1).text, 'I see. Would you like to leave a message for Maya?')
   assert.equal(session.stats.emptyReplies, 0)
   advance(STALL_MS.callerLine + 1000)
   assert.equal(creates(sent).length, 0, 'the caller has a question to answer')
+  session.finish()
+})
+
+test('notes that start before the audio already sent: the queued audio is dropped too', (t) => {
+  const events = []
+  const { session } = harness(t, { flush: () => events.push('flush'), muted: () => events.push('muted') })
+  session.handle({ type: 'reply.started', reply_id: 'r1' })
+  session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  ;['Okay. ', '(call ', 'end_call)'].forEach((w, i) => session.handle({ type: 'transcript.agent.delta', delta: w, start_ms: i * 400, reply_id: 'r1' }))
+  assert.deepEqual(events, ['flush', 'muted'])
   session.finish()
 })
