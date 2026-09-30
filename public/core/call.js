@@ -23,11 +23,12 @@ function nudgeText(flag, firstName) {
   return `The caller just ${flag.label}. Do not continue the screening. Say calmly: "${firstName} doesn't pay for job opportunities or share personal details before a written offer, so I'll end the call here. Take care." Then call end_call with reason scam.`
 }
 
-// The server normally starts a reply within 1 to 2 seconds. If the line stays
-// quiet this long while the agent owes the caller a reply, ask for one. This
-// covers a reply cut off by a noise (its tool results are dropped with it and
-// the server waits for the caller, who is waiting for the agent).
-export const STALL_MS = 4000
+// If the line stays quiet this long while the agent owes the caller a reply,
+// ask for one. After a caller's line the model can take 3 to 4 seconds to
+// start; after tool results the next reply starts within half a second. A reply
+// cut off by a noise, or one that ended with nothing in it, gets no reply at
+// all: the server waits for the caller, who is waiting for the agent.
+export const STALL_MS = { callerLine: 6500, toolResult: 4000, noReply: 2500 }
 const MAX_RECOVERIES = 4
 export const RESUME_TEXT =
   'Carry on from where the call stopped. If the caller said something you have not answered, answer it. If you were cut off, say your last point again in one short sentence. If you were waiting for a tool result, call that tool again.'
@@ -39,7 +40,7 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
   // Every message out goes through here, so the watchdog knows when the agent
   // has been asked to speak (tool results start the next reply on their own).
   const send = (msg) => {
-    if (msg.type === 'tool.result' || msg.type === 'reply.create') expectReply()
+    if (msg.type === 'tool.result' || msg.type === 'reply.create') expectReply('toolResult')
     if (msg.type !== 'input.audio') record('out', msg.type, msg.type === 'tool.result' ? msg.call_id : undefined)
     return sendRaw(msg)
   }
@@ -50,8 +51,9 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
     queue: createToolQueue(send),
     // The last 300 protocol events, without audio, for debugging a call.
     log: [],
-    stats: { cutOffs: 0, recoveries: 0 },
+    stats: { cutOffs: 0, emptyReplies: 0, recoveries: 0 },
     owesReply: false,
+    stallMs: STALL_MS.toolResult,
     quietSince: 0,
     callerSpeakingSince: null,
     stallTimer: null,
@@ -90,8 +92,9 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
   }
 
   // ---- stall watchdog ----
-  function expectReply() {
+  function expectReply(kind) {
     call.owesReply = true
+    call.stallMs = STALL_MS[kind]
     heard()
   }
 
@@ -101,14 +104,14 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
     call.quietSince = now() + playoutMs()
     if (!call.owesReply || call.finished) return
     clearTimeout(call.stallTimer)
-    call.stallTimer = setTimeout(checkStall, call.quietSince + STALL_MS - now())
+    call.stallTimer = setTimeout(checkStall, call.quietSince + call.stallMs - now())
   }
 
   function checkStall() {
     call.stallTimer = null
     if (call.finished || call.endRequested || !call.owesReply || call.replyActive) return
     const speaking = call.callerSpeakingSince !== null && now() - call.callerSpeakingSince < 30000
-    const wait = speaking ? STALL_MS : call.quietSince + STALL_MS - now()
+    const wait = speaking ? call.stallMs : call.quietSince + call.stallMs - now()
     if (wait > 0) {
       call.stallTimer = setTimeout(checkStall, wait)
       return
@@ -190,9 +193,12 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
         }
         emit('replyEnd', msg.status)
         // A finished reply leaves the next move to the caller, unless tool
-        // results go out below (they start the next reply). A cut-off reply
-        // still owes the caller an answer.
-        call.owesReply = interrupted
+        // results go out below (they start the next reply). A cut-off reply,
+        // or one with no speech and no tool call, still owes the caller one.
+        const empty = !interrupted && !call.replyHadAudio && !call.replyText.trim() && !call.toolsThisReply.length
+        if (empty) call.stats.emptyReplies++
+        call.owesReply = interrupted || empty
+        call.stallMs = STALL_MS.noReply
         heard()
         // The agent asked to hang up and has said goodbye: drop any unsent
         // tool results so it doesn't start talking again, then hang up once
@@ -236,7 +242,7 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
         onCallerLine(msg.text || '')
         // A line said over the agent's reply is its own business; one said
         // after it needs an answer.
-        if (!call.replyActive && String(msg.text || '').trim()) expectReply()
+        if (!call.replyActive && String(msg.text || '').trim()) expectReply('callerLine')
         break
 
       case 'transcript.agent.delta':

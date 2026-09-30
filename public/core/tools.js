@@ -300,7 +300,7 @@ const handlers = {
       email: c.email,
       email_readback: spellEmail(c.email),
       next: c.email
-        ? `Read the email back like this: "${spellEmail(c.email)}". Then call confirm_details with scope contact.`
+        ? `Read the email back like this: "${spellEmail(c.email)}", and ask if it is right. When they say yes, call confirm_details with scope contact.`
         : 'Ask for the best email for the written confirmation.',
     }
   },
