@@ -312,3 +312,10 @@ test('audit: asking to get the caller on her calendar is not a booking claim', (
   assert.equal(claims("Thanks, Jen. Before I get you on her calendar, what's the pay range?").length, 0)
   assert.equal(claims("Great, you're on her calendar for Thursday at noon.").length, 1)
 })
+
+test('audit: her expectation in her words passes; a refusal dressed up as her words does not', () => {
+  const s = newCall()
+  const quotes = (text) => finalizeCall({ candidate: CANDIDATE, state: s, transcript: [{ who: 'agent', text }] }).audit.unsupported.filter((u) => u.type === 'quote' || u.type === 'amount')
+  assert.equal(quotes('Maya keeps her current pay private. In her words, for full-time roles her floor is 120 thousand base.').length, 0)
+  assert.equal(quotes("In Maya's words, I am not able to share her current salary.").length, 1)
+})
