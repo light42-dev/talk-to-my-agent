@@ -225,6 +225,8 @@ function renderShield(state, transcript) {
 const partialEl = {}
 let liveReply = null
 let printedReply = null
+// Shown under the agent's line once it is printed.
+let cutNote = null
 const ATTACHES_LEFT = /^[.,!?;:%°)\]}…'"’”]/
 const NO_SPACE_AFTER = /[([{$\-/'"‘“]$/
 function appendDelta(text, delta) {
@@ -429,6 +431,7 @@ function tick() {
 
 function resetPanels() {
   lastFacts = {}
+  cutNote = null
   $('transcript').replaceChildren()
   $('inbox-body').replaceChildren(el('p', { className: 'empty', textContent: 'After the call, the recruiter gets an email with the details they confirmed and a calendar invite.' }))
   $('receipt-status').className = 'pill'
@@ -490,6 +493,10 @@ function pageHooks() {
       if (who === 'agent') printedReply = msg?.reply_id ?? printedReply
       if (who === 'agent' && msg?.interrupted) text = text.trim() ? `${text.trim()} (cut off)` : '(cut off)'
       addLine(who, text)
+      if (who === 'agent' && cutNote) {
+        addLine('tool', cutNote)
+        cutNote = null
+      }
     },
     tool(name, args, result, meta) {
       addLine('tool', describeTool(name, args, result) + (meta?.byCode ? " (read by code from the caller's words)" : ''))
@@ -497,8 +504,9 @@ function pageHooks() {
     stuck(plan) {
       reconnect(call, plan, plan.why)
     },
-    muted() {
-      dropPartial('agent')
+    muted({ rest }) {
+      if (rest) cutNote = 'the agent started reading out its notes, so we cut that part off'
+      else dropPartial('agent')
     },
     change() {
       renderFacts(call.session.state)

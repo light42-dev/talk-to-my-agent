@@ -326,3 +326,32 @@ test('ordinary replies are never muted', (t) => {
   assert.equal(session.transcript.filter((l) => l.who === 'agent').length, 3)
   session.finish()
 })
+
+test('notes after a real sentence: the sentence plays, the rest of the audio is dropped, and nothing is owed', (t) => {
+  const played = []
+  const events = []
+  const plans = []
+  const { session, sent, advance } = harness(t, {
+    audio: (data) => played.push(data),
+    flush: () => events.push('flush'),
+    muted: (info) => events.push(`muted rest=${info.rest}`),
+    stuck: (plan) => plans.push(plan),
+  })
+  session.handle({ type: 'transcript.user', text: "Hi, this is Linda. I'm trying to order a large pepperoni pizza." })
+  session.handle({ type: 'reply.started', reply_id: 'r1' })
+  session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  for (const w of "I see. Would you like to leave a message for Maya? ".split(/(?<= )/)) session.handle({ type: 'transcript.agent.delta', delta: w, reply_id: 'r1' })
+  session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  for (const w of '(call end_call reason: message_taken)'.split(/(?<= )/)) session.handle({ type: 'transcript.agent.delta', delta: w, reply_id: 'r1' })
+  session.handle({ type: 'reply.audio', data: ONE_SECOND })
+  session.handle({ type: 'transcript.agent', text: 'I see. Would you like to leave a message for Maya? (call end_call reason: message_taken)', reply_id: 'r1' })
+  session.handle({ type: 'reply.done', reply_id: 'r1', status: 'completed' })
+  assert.deepEqual(events, ['muted rest=true'], 'no flush: the sentence already in the cushion still plays')
+  assert.equal(played.length, 2)
+  assert.equal(plans.length, 0)
+  assert.equal(session.transcript.at(-1).text, 'I see. Would you like to leave a message for Maya?')
+  assert.equal(session.stats.emptyReplies, 0)
+  advance(STALL_MS.callerLine + 1000)
+  assert.equal(creates(sent).length, 0, 'the caller has a question to answer')
+  session.finish()
+})

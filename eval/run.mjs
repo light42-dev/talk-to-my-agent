@@ -221,9 +221,9 @@ async function runScenario(sc, { text }) {
         say('--', `no reply: asked the agent to go on${info?.rescued ? ' (details read by code)' : ''}`)
       },
       // The agent started reading out its notes: its audio stops here.
-      muted() {
-        note('agent', 'muted')
-        say('--', 'the agent started reading out its notes: muted')
+      muted({ rest }) {
+        note('agent', 'muted', { rest })
+        say('--', `the agent started reading out its notes: ${rest ? 'the rest of the reply' : 'the reply'} muted`)
       },
       // Replies kept coming back empty, or a reply was muted. Like the page,
       // open a fresh session that picks up the call.
