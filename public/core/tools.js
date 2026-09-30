@@ -269,7 +269,10 @@ const handlers = {
     if (args.note) d.notes.push(String(args.note))
 
     // A changed value after a read-back needs reading back again.
-    if (anyChange) state.detailsConfirmed = false
+    if (anyChange) {
+      state.detailsConfirmed = false
+      state.detailsChangedAt = state.callerTurns || 0
+    }
 
     const fit = overallFit(state, state.candidate.rules)
     const missing = missingFields(state)
@@ -300,7 +303,10 @@ const handlers = {
     if (c.name || c.email) {
       const changed = !same(contactSnapshot, [c.name, c.email, c.phone])
       mark(state, 'contact', changed)
-      if (changed) state.contactConfirmed = false
+      if (changed) {
+        state.contactConfirmed = false
+        state.contactChangedAt = state.callerTurns || 0
+      }
     }
     return {
       ok: true,
@@ -319,6 +325,19 @@ const handlers = {
       return {
         ok: true,
         next: 'Ask what needs correcting, record the correction, and read it back again.',
+      }
+    }
+    // The caller can only confirm a read-back they have heard: something has
+    // to be said by the caller after the change was recorded. (Only counted
+    // on a live call, where the call logic counts the caller's lines.)
+    const changedAt = scope === 'contact' ? state.contactChangedAt : state.detailsChangedAt
+    if (state.trackTurns && changedAt !== undefined && (state.callerTurns || 0) <= changedAt) {
+      return {
+        ok: false,
+        next:
+          scope === 'contact'
+            ? 'Read the email back the way record_contact spelled it and ask if it is right. Call confirm_details only after they answer.'
+            : 'Read back the sentence record_details gave you and ask if it is right. Call confirm_details only after they answer.',
       }
     }
     // What the caller confirms is what goes in the summary email, so it has

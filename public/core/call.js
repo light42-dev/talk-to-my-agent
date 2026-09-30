@@ -62,6 +62,10 @@ function askFor(field, firstName) {
 export function createCallSession({ candidate, applications, send: sendRaw, hooks = {}, now = () => Date.now(), playoutLagMs = () => 0 }) {
   const emit = (name, ...args) => hooks[name]?.(...args)
   const state = createCallState(candidate, applications, new Date(now()))
+  // Tools use the caller's line count to tell a heard read-back from one
+  // confirmed in the same breath.
+  state.trackTurns = true
+  state.callerTurns = 0
   const startedAt = now()
   // Every message out goes through here, so the watchdog knows when the agent
   // has been asked to speak (tool results start the next reply on their own).
@@ -227,6 +231,7 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
 
   function onCallerLine(text) {
     call.transcript.push({ who: 'caller', text, at: new Date(now()).toISOString() })
+    if (text.trim()) state.callerTurns++
     if (text.trim()) call.unrecorded = [...call.unrecorded, text].slice(-8)
     emit('line', 'caller', text)
     // The rules run on the caller's own words. A hard red flag blocks booking
