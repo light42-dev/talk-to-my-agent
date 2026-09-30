@@ -117,6 +117,8 @@ npm run smoke    # against the real API: token, session setup, greeting, two too
 
 ## Eval: 13 simulated calls on the real API
 
+**Latest run (September 30, on the deployed app): 10 of 13 calls passed every check.** Both scam calls ended with nothing shared, all 8 summary emails that went out had every detail and address right, and 47 of 50 role details were captured correctly. The three misses are explained in [`eval/RESULTS.md`](eval/RESULTS.md): the simulated recruiter's own voice session dropped mid-call; the agent put a polite refusal in Maya's words, which the claims audit flagged (the prompt is now fixed); and an email read-back looped between two AIs mishearing each other until the 5-minute limit. Replies take about 2.2 s, or 4.4 s when the agent calls a tool first.
+
 ```sh
 npm run eval                 # every scenario, spoken, one call at a time (about 25 minutes, about $4)
 npm run eval -- --list       # the scenarios
