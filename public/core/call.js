@@ -5,10 +5,11 @@
 //
 // Events: https://www.assemblyai.com/docs/voice-agents/voice-agent-api/events-reference
 
+import { extractDetails } from './extract.js'
 import { audioSeconds, createPlayoutClock, createToolQueue } from './protocol.js'
 import { scamVerdict } from './scam.js'
 import { EMAIL_TRANSCRIPTION_MODE } from './session.js'
-import { addRuleFlag, createCallState, handleToolCall } from './tools.js'
+import { addRuleFlag, createCallState, handleToolCall, missingFields, readbackSentence } from './tools.js'
 
 // Errors that leave the call unusable: a rejected configuration would put a
 // generic assistant on the line.
@@ -33,6 +34,30 @@ const MAX_RECOVERIES = 4
 export const RESUME_TEXT =
   'Carry on from where the call stopped. If the caller said something you have not answered, answer it. If you were cut off, say your last point again in one short sentence. If you were waiting for a tool result, call that tool again.'
 
+// Which record_details argument fills which field.
+const FIELD_OF = {
+  pay_min: 'pay',
+  pay_max: 'pay',
+  pay_unit: 'pay',
+  pay_basis: 'pay',
+  work_mode: 'work',
+  office_location: 'work',
+  office_days_per_week: 'work',
+  interview_rounds: 'rounds',
+  decision_when: 'decision',
+  decision_date: 'decision',
+}
+
+function askFor(field, firstName) {
+  if (field === 'company') return 'Which company are you calling from?'
+  if (field === 'pay range') return "What's the pay range for the role?"
+  if (field === 'remote, hybrid or on-site') return 'Is the role remote, hybrid, or on-site?'
+  if (field === 'office location') return 'Which office would it be?'
+  if (field === 'office days per week') return 'How many days a week in the office?'
+  if (field === 'number of interview rounds') return 'How many interview rounds are there?'
+  return `When will ${firstName} hear back either way?`
+}
+
 export function createCallSession({ candidate, applications, send: sendRaw, hooks = {}, now = () => Date.now(), playoutLagMs = () => 0 }) {
   const emit = (name, ...args) => hooks[name]?.(...args)
   const state = createCallState(candidate, applications, new Date(now()))
@@ -51,7 +76,11 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
     queue: createToolQueue(send),
     // The last 300 protocol events, without audio, for debugging a call.
     log: [],
-    stats: { cutOffs: 0, emptyReplies: 0, recoveries: 0 },
+    stats: { cutOffs: 0, emptyReplies: 0, recoveries: 0, reconnects: 0 },
+    // Caller lines since the agent last recorded details, and how many
+    // replies in a row came back with nothing in them.
+    unrecorded: [],
+    failStreak: 0,
     owesReply: false,
     stallMs: STALL_MS.toolResult,
     quietSince: 0,
@@ -117,14 +146,84 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
       return
     }
     call.owesReply = false
+    // Replies keep coming back empty: the voice session is stuck. A host that
+    // can reconnect gets what a fresh session needs to pick up the call.
+    if (call.failStreak >= 2 && hooks.stuck && call.stats.reconnects < 2) {
+      call.stats.reconnects++
+      emit('stuck', resumePlan())
+      return
+    }
     if (call.stats.recoveries >= MAX_RECOVERIES) return
     call.stats.recoveries++
-    emit('recover', { log: call.log.slice(-12) })
-    send({ type: 'reply.create', instructions: RESUME_TEXT })
+    // The reply to the caller's words got lost: record what code can read in
+    // them, so the agent only has to read it back.
+    const rescued = call.stallMs === STALL_MS.toolResult ? null : rescueDetails()
+    emit('recover', { log: call.log.slice(-12), rescued: !!rescued })
+    send({
+      type: 'reply.create',
+      instructions: rescued ? `The caller's details are already recorded, so do not call record_details for them. ${rescued.next}` : RESUME_TEXT,
+    })
+  }
+
+  function rescueDetails() {
+    if (!call.unrecorded.length || state.detailsConfirmed) return null
+    const found = extractDetails(call.unrecorded.join(' '), { now: new Date(now()), company: state.caller.company })
+    const args = Object.fromEntries(Object.entries(found).filter(([key]) => !state.status[FIELD_OF[key]]))
+    if (!Object.keys(args).length) return null
+    call.unrecorded = []
+    const result = handleToolCall(state, 'record_details', args)
+    emit('tool', 'record_details', args, result, { byCode: true })
+    emit('change')
+    return result
+  }
+
+  // What a fresh voice session needs to pick up this call: a first line it
+  // speaks as is, and the call so far for its prompt.
+  function resumePlan() {
+    rescueDetails()
+    const first = candidate.firstName
+    const recorded = readbackSentence(state).replace(/–/g, ' to ')
+    const missing = missingFields(state)
+    let greeting = 'Sorry, the line cut out for a second. Could you say that last part again?'
+    if (!state.detailsConfirmed && recorded) {
+      greeting = missing.length
+        ? `Sorry, the line cut out for a second. So far I have ${recorded}. ${askFor(missing[0], first)}`
+        : `Sorry, the line cut out for a second. So that's ${recorded}. Did I get that right?`
+    }
+    const said = call.transcript
+      .slice(-16)
+      .map((l) => `${l.who === 'agent' ? 'You' : 'Caller'}: ${l.text}`)
+      .join('\n')
+    const context = [
+      '',
+      '',
+      `This call is already in progress. The line dropped for a moment and you are back on it, and you just said: "${greeting}" Do not greet the caller or introduce yourself again.`,
+      `The call so far:\n${said}`,
+      recorded ? `Recorded so far${state.detailsConfirmed ? ', and confirmed by the caller' : ', not yet confirmed'}: ${recorded}.` : '',
+      state.booking ? `Booked: ${state.booking.label}.` : '',
+      'Continue the call from here, following the steps above.',
+    ].join('\n')
+    return { greeting, context }
+  }
+
+  // After the host reconnects: the old session's pending results and timers
+  // belong to a session that is gone.
+  call.resetForNewSession = () => {
+    call.queue.clear()
+    call.queue = createToolQueue(send)
+    call.ready = false
+    call.replyActive = false
+    call.owesReply = false
+    call.failStreak = 0
+    call.callerSpeakingSince = null
+    call.patientForEmail = false
+    call.clock.clear()
+    clearTimeout(call.stallTimer)
   }
 
   function onCallerLine(text) {
     call.transcript.push({ who: 'caller', text, at: new Date(now()).toISOString() })
+    if (text.trim()) call.unrecorded = [...call.unrecorded, text].slice(-8)
     emit('line', 'caller', text)
     // The rules run on the caller's own words. A hard red flag blocks booking
     // at once; if the agent doesn't act on it, it is told to end the call.
@@ -196,7 +295,10 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
         // results go out below (they start the next reply). A cut-off reply,
         // or one with no speech and no tool call, still owes the caller one.
         const empty = !interrupted && !call.replyHadAudio && !call.replyText.trim() && !call.toolsThisReply.length
-        if (empty) call.stats.emptyReplies++
+        if (empty) {
+          call.stats.emptyReplies++
+          call.failStreak++
+        } else if (call.replyHadAudio || call.toolsThisReply.length) call.failStreak = 0
         call.owesReply = interrupted || empty
         call.stallMs = STALL_MS.noReply
         heard()
@@ -259,6 +361,7 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
         const args = msg.arguments || {}
         const result = handleToolCall(state, msg.name, args)
         call.toolsThisReply.push(msg.name)
+        if (msg.name === 'record_details') call.unrecorded = []
         emit('tool', msg.name, args, result)
         if (msg.name === 'end_call') {
           call.endRequested = true

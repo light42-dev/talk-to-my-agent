@@ -7,7 +7,7 @@ import { APPLICATIONS, CANDIDATE } from '../public/core/candidate.js'
 const ONE_SECOND = Buffer.alloc(48000).toString('base64') // 1 s of 24 kHz PCM16
 
 // A call session with a recording socket and a hand-driven clock.
-function harness(t) {
+function harness(t, hooks = {}) {
   t.mock.timers.enable({ apis: ['setTimeout'] })
   let clock = 1_000_000
   const sent = []
@@ -16,7 +16,7 @@ function harness(t) {
     candidate: CANDIDATE,
     applications: APPLICATIONS,
     send: (msg) => sent.push(msg),
-    hooks: { hangup: (why) => hangups.push(why) },
+    hooks: { hangup: (why) => hangups.push(why), ...hooks },
     now: () => clock,
   })
   session.handle({ type: 'session.ready', session_id: 'sess_test' })
@@ -185,5 +185,57 @@ test('a reply that ends with no speech and no tool call is followed up', (t) => 
   assert.equal(session.stats.emptyReplies, 1)
   advance(STALL_MS.noReply + 100)
   assert.equal(creates(sent).length, 1)
+  session.finish()
+})
+
+const PACKED = "The range is $115,000 to $135,000 base, hybrid, 2 days a week in Austin, 4 rounds, and we'll decide by October 20th."
+
+function upToThePayQuestion(session, reply, advance) {
+  session.handle({ type: 'transcript.user', text: 'Hi, this is Jen Park from Northwind Analytics.' })
+  reply('r1', { text: 'Thanks.', tools: [['find_application', { company: 'Northwind Analytics' }]] })
+  reply('r2', { text: "Maya applied on September 3. What's the pay range?" })
+  advance(2000) // both replies' audio has played
+}
+
+test('when the reply to a packed caller line comes back empty, code records the details and the agent reads them back', (t) => {
+  const { session, sent, advance, reply } = harness(t)
+  upToThePayQuestion(session, reply, advance)
+  session.handle({ type: 'transcript.user', text: PACKED })
+  reply('r3', { audio: false })
+  advance(STALL_MS.noReply + 100)
+  const c = creates(sent)
+  assert.equal(c.length, 1)
+  assert.match(c[0].instructions, /already recorded/)
+  assert.match(c[0].instructions, /Read this back/)
+  assert.equal(session.state.details.rounds, 4)
+  assert.equal(session.state.details.work.location, 'Austin')
+  assert.equal(session.state.status.pay, 'captured', 'recorded, not confirmed: the caller still has to say yes')
+  session.finish()
+})
+
+test('if replies keep coming back empty, the host is asked for a fresh session that picks up the call', (t) => {
+  const plans = []
+  const { session, sent, advance, reply } = harness(t, { stuck: (plan) => plans.push(plan) })
+  upToThePayQuestion(session, reply, advance)
+  session.handle({ type: 'transcript.user', text: PACKED })
+  reply('r3', { audio: false })
+  advance(STALL_MS.noReply + 100)
+  assert.equal(creates(sent).length, 1, 'first, one nudge')
+  reply('r4', { audio: false })
+  reply('r5', { audio: false })
+  advance(STALL_MS.noReply + 100)
+  assert.equal(creates(sent).length, 1, 'no more nudges into a stuck session')
+  assert.equal(plans.length, 1)
+  assert.match(plans[0].greeting, /^Sorry, the line cut out for a second\. So that's \$115,000 to \$135,000 base, hybrid, 2 days a week in Austin, 4 interview rounds, and a decision by October 20\. Did I get that right\?$/)
+  assert.match(plans[0].context, /Do not greet the caller/)
+  assert.match(plans[0].context, /Caller: The range is/)
+  // The host reconnects; the new session starts clean and greets with the plan.
+  session.resetForNewSession()
+  session.handle({ type: 'session.ready', session_id: 'sess_2' })
+  reply('g2', { text: plans[0].greeting })
+  session.handle({ type: 'transcript.user', text: "Yes, that's right." })
+  reply('r6', { text: 'Great.', tools: [['confirm_details', { confirmed: true, scope: 'details' }]] })
+  assert.equal(session.state.detailsConfirmed, true)
+  assert.equal(toolResults(sent).at(-1).call_id, 'r6_0')
   session.finish()
 })

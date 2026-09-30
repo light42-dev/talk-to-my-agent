@@ -43,26 +43,47 @@ const FIRST = CANDIDATE.firstName
 
 // ---- static content ------------------------------------------------------
 
+// Lines to read as the caller, one answer per question from the agent.
 const SCENARIOS = [
   {
     title: 'A real recruiter',
     blurb: 'Northwind Analytics, the role Maya applied for',
-    lines: "Hi, this is Jen Park from Northwind Analytics, about the Senior Data Analyst role. The range is one fifteen to one thirty-five base. Hybrid, two days a week in Austin. Four rounds, and we'll decide by October twentieth. My email is jen dot park at northwind dash analytics dot com.",
+    lines: [
+      'Hi, this is Jen Park from Northwind Analytics, about the Senior Data Analyst role.',
+      'The range is one fifteen to one thirty-five base.',
+      "It's hybrid, two days a week in Austin.",
+      "Four rounds, and we'll decide by October twentieth.",
+      "Yes, that's right.",
+      'The first one works.',
+      "It's jen dot park at northwind dash analytics dot com.",
+    ],
   },
   {
     title: 'A recruiter who hides the pay',
     blurb: 'Only shares a pay range when pushed',
-    lines: "Hi, I'm Sam from Keystone Freight about the BI role. We don't really share ranges this early. What is she looking for? ...Fine, ballpark one ten to one twenty-five.",
+    lines: [
+      "Hi, I'm Sam from Keystone Freight, about the BI role.",
+      "We don't really share ranges this early. What is she looking for?",
+      'Fine, ballpark one ten to one twenty-five.',
+    ],
   },
   {
     title: 'A low offer from an agency',
     blurb: 'A contract below her minimum rate, on-site in another city',
-    lines: "Hey, Mike from TalentBridge Staffing. I've got a twelve-month W-2 contract, forty dollars an hour, on-site in Dallas five days a week.",
+    lines: [
+      'Hey, Mike from TalentBridge Staffing, about a data analyst contract.',
+      "It's a twelve-month W-2 contract, forty dollars an hour.",
+      "It's on-site in Dallas, five days a week.",
+    ],
   },
   {
     title: 'A job scammer',
     blurb: 'Asks for a fee and a Telegram interview',
-    lines: "Congratulations, Maya's been selected! To start, there's just a forty-nine dollar onboarding fee for her equipment kit. We can do the interview over Telegram.",
+    lines: [
+      "Congratulations, Maya's been selected for a remote data role!",
+      "There's just a forty-nine dollar onboarding fee for her equipment kit.",
+      'We can do the interview over Telegram.',
+    ],
   },
 ]
 
@@ -86,7 +107,8 @@ function renderStatic() {
         { className: 'scenario', type: 'button' },
         el('strong', { textContent: s.title }),
         el('span', { textContent: s.blurb }),
-        el('q', { textContent: s.lines })
+        el('ol', { className: 'lines' }, ...s.lines.map((line) => el('li', { textContent: line }))),
+        el('em', { className: 'lines-hint', textContent: 'Say one line at a time, after the agent asks.' })
       )
       card.setAttribute('aria-expanded', 'false')
       card.onclick = () => card.setAttribute('aria-expanded', String(card.getAttribute('aria-expanded') !== 'true'))
@@ -422,6 +444,12 @@ function resetPanels() {
 function pageHooks() {
   return {
     ready(msg) {
+      if (call.startedAt) {
+        // A fresh session after a reconnect: the call carries on.
+        console.info('[voice agent] session.ready after reconnecting', msg.session_id)
+        setStatus('listening', 'on the call')
+        return
+      }
       call.startedAt = Date.now()
       console.info('[voice agent] session.ready', msg.session_id)
       call.timer = setInterval(tick, 1000)
@@ -463,8 +491,11 @@ function pageHooks() {
       if (who === 'agent' && msg?.interrupted) text = text.trim() ? `${text.trim()} (cut off)` : '(cut off)'
       addLine(who, text)
     },
-    tool(name, args, result) {
-      addLine('tool', describeTool(name, args, result))
+    tool(name, args, result, meta) {
+      addLine('tool', describeTool(name, args, result) + (meta?.byCode ? " (read by code from the caller's words)" : ''))
+    },
+    stuck(plan) {
+      reconnect(call, plan)
     },
     change() {
       renderFacts(call.session.state)
@@ -484,6 +515,60 @@ function pageHooks() {
     hangup() {
       endCall('agent')
     },
+  }
+}
+
+// One voice session. After a reconnect the call has a new socket, and
+// anything still arriving on the old one is ignored.
+function openSocket(c, token, session) {
+  const url = new URL(WS_URL)
+  url.searchParams.set('token', token)
+  const ws = new WebSocket(url)
+  c.ws = ws
+  const live = () => call === c && !c.finished && c.ws === ws
+  ws.onopen = () => ws.send(JSON.stringify({ type: 'session.update', session }))
+  ws.onmessage = ({ data }) => live() && c.session.handle(JSON.parse(data))
+  ws.onclose = (event) => {
+    if (!live()) return
+    if (!c.session.ready && !c.startedAt) {
+      // Browsers report a refused token as a bare close (often code 1006).
+      console.error('[voice agent] socket closed before session.ready', event.code, event.reason)
+      setStatus('error', `connection closed before the call started (code ${event.code}${event.reason ? `: ${event.reason}` : ''}). Check ASSEMBLYAI_API_KEY.`)
+      endCall('error')
+      return
+    }
+    endCall('closed')
+  }
+  ws.onerror = () => {
+    if (live()) setStatus('error', 'connection failed')
+  }
+}
+
+// The voice service stopped replying on this session. A fresh session picks
+// up the call: it first says the line the call logic wrote (spoken as is),
+// and its prompt carries the call so far. What was recorded stays recorded.
+async function reconnect(c, { greeting, context }) {
+  if (call !== c || c.finished) return
+  console.warn('[voice agent] the voice session stopped replying; starting a fresh one')
+  addLine('tool', 'the voice service stopped replying, so we reconnected')
+  setStatus('connecting', 'reconnecting')
+  const old = c.ws
+  c.ws = null
+  c.session.resetForNewSession()
+  c.playback?.port.postMessage('stop')
+  try {
+    if (old?.readyState === 1) old.send(JSON.stringify({ type: 'session.end' }))
+  } catch {}
+  setTimeout(() => old?.close(), 1500)
+  try {
+    const body = await fetch('/api/token').then((r) => r.json())
+    if (!body.token) throw new Error(body.error || 'no session token')
+    if (call !== c || c.finished) return
+    const session = buildSession(CANDIDATE, APPLICATIONS, new Date())
+    openSocket(c, body.token, { ...session, system_prompt: session.system_prompt + context, greeting })
+  } catch (error) {
+    setStatus('error', `could not reconnect: ${error.message}`)
+    endCall('error')
   }
 }
 
@@ -539,39 +624,18 @@ async function startCall() {
     const capture = await addWorklet(c.captureCtx, CAPTURE_WORKLET, 'capture')
     c.captureCtx.createMediaStreamSource(c.mic).connect(capture)
 
-    const url = new URL(WS_URL)
-    url.searchParams.set('token', body.token)
-    const ws = new WebSocket(url)
-    c.ws = ws
-
     capture.port.onmessage = ({ data }) => {
-      if (!live() || !c.session.ready || ws.readyState !== 1) return
+      const ws = c.ws
+      if (!live() || !c.session.ready || ws?.readyState !== 1) return
       const bytes = new Uint8Array(data)
       let binary = ''
       for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000))
       ws.send(JSON.stringify({ type: 'input.audio', audio: btoa(binary) }))
     }
 
-    ws.onopen = () => {
-      // Inline configuration: the prompt, tools and hints are built from
-      // Maya's profile each call, with today's date.
-      send({ type: 'session.update', session: buildSession(CANDIDATE, APPLICATIONS, new Date()) })
-    }
-    ws.onmessage = ({ data }) => live() && c.session.handle(JSON.parse(data))
-    ws.onclose = (event) => {
-      if (!live()) return
-      if (!c.session.ready) {
-        // Browsers report a refused token as a bare close (often code 1006).
-        console.error('[voice agent] socket closed before session.ready', event.code, event.reason)
-        setStatus('error', `connection closed before the call started (code ${event.code}${event.reason ? `: ${event.reason}` : ''}). Check ASSEMBLYAI_API_KEY.`)
-        endCall('error')
-        return
-      }
-      endCall('closed')
-    }
-    ws.onerror = () => {
-      if (live()) setStatus('error', 'connection failed')
-    }
+    // Inline configuration: the prompt, tools and hints are built from
+    // Maya's profile each call, with today's date.
+    openSocket(c, body.token, buildSession(CANDIDATE, APPLICATIONS, new Date()))
   } catch (error) {
     if (call !== c) return
     setStatus('error', micProblem(error) || error.message)

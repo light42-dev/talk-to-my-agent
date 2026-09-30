@@ -146,8 +146,10 @@ select { flex: 0 1 200px; min-width: 0; height: 48px; padding: 0 10px; border-ra
 .scenario { text-align: left; border: 1px solid var(--border); background: var(--surface); border-radius: 12px; padding: 12px 14px; color: var(--text); box-shadow: var(--shadow); }
 .scenario strong { display: block; color: var(--ink); font-size: 14px; }
 .scenario span { display: block; color: var(--muted); font-size: 13px; margin-top: 2px; }
-.scenario q { display: none; margin-top: 8px; font-style: italic; color: var(--text); font-size: 13px; quotes: "“" "”"; }
-.scenario[aria-expanded="true"] q { display: block; }
+.scenario .lines { display: none; margin: 8px 0 0; padding-left: 20px; color: var(--text); font-size: 13px; font-style: italic; }
+.scenario .lines li { margin: 3px 0; }
+.scenario .lines-hint { display: none; margin-top: 6px; color: var(--muted); font-size: 12px; }
+.scenario[aria-expanded="true"] .lines, .scenario[aria-expanded="true"] .lines-hint { display: block; }
 .scenario:hover { border-color: var(--accent); }
 
 .knows summary { cursor: pointer; font-weight: 600; color: var(--ink); }
