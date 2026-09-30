@@ -222,31 +222,34 @@ async function runScenario(sc, { text }) {
       },
       // Replies kept coming back empty. Like the page, open a fresh session
       // that picks up the call.
-      async stuck(plan) {
-        note('agent', 'reconnect', { greeting: plan.greeting })
-        say('--', `voice session stuck, reconnecting: "${plan.greeting}"`)
-        const old = a
-        a = null
-        // New handlers first: from here on the old session's events,
-        // including its session.ended, are ignored.
-        const handlers = agentHandlers()
-        session.resetForNewSession()
-        old?.send({ type: 'session.end' })
-        setTimeout(() => old?.close(), 1500)
-        try {
-          const fresh = await openJsonSocket(wsUrl(await token(maxSeconds + 60)), handlers)
-          if (finishing) return fresh.close()
-          await fresh.opened
-          a = fresh
-          const config = buildSession(CANDIDATE, APPLICATIONS, new Date())
-          a.send({ type: 'session.update', session: { ...config, system_prompt: config.system_prompt + plan.context, greeting: plan.greeting } })
-        } catch (error) {
-          setupError = setupError || `reconnect failed: ${error.message}`
-          hangUp('error')
-        }
-      },
+      stuck: (plan) => reconnectAgent(plan),
     },
   })
+
+  async function reconnectAgent(plan) {
+    note('agent', 'reconnect', { greeting: plan.greeting })
+    say('--', `voice session stuck, reconnecting: "${plan.greeting}"`)
+    const old = a
+    a = null
+    // New handlers first: from here on the old session's events,
+    // including its session.ended, are ignored.
+    const handlers = agentHandlers()
+    session.resetForNewSession()
+    old?.send({ type: 'session.end' })
+    setTimeout(() => old?.close(), 1500)
+    try {
+      const fresh = await openJsonSocket(wsUrl(await token(maxSeconds + 60)), handlers)
+      if (finishing) return fresh.close()
+      await fresh.opened
+      a = fresh
+      const config = buildSession(CANDIDATE, APPLICATIONS, new Date())
+      a.send({ type: 'session.update', session: { ...config, system_prompt: config.system_prompt + plan.context, greeting: plan.greeting } })
+    } catch (error) {
+      setupError = setupError || `reconnect failed: ${error.message}`
+      hangUp('error')
+    }
+  }
+
 
   // A session that closes or ends on its own ends the call for both sides.
   let aReady = false
@@ -299,6 +302,12 @@ async function runScenario(sc, { text }) {
     },
     onClose() {
       if (gen !== agentGen) return
+      // The service closed the line mid-call: pick it up like the page does.
+      if (!finishing && aReady && !session.endRequested && session.stats.reconnects < 2) {
+        session.stats.reconnects++
+        reconnectAgent(session.resumePlan())
+        return
+      }
       endedA.resolve()
       lost('agent', aReady)
     },

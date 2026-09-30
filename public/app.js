@@ -537,6 +537,15 @@ function openSocket(c, token, session) {
       endCall('error')
       return
     }
+    // The service closed the line in the middle of the call: pick it up in a
+    // fresh session, as when replies stop coming.
+    const s = c.session
+    if (c.startedAt && !s.endRequested && s.stats.reconnects < 2) {
+      console.warn('[voice agent] the voice session closed mid-call', event.code, event.reason)
+      s.stats.reconnects++
+      reconnect(c, s.resumePlan(), 'dropped the call')
+      return
+    }
     endCall('closed')
   }
   ws.onerror = () => {
@@ -547,10 +556,10 @@ function openSocket(c, token, session) {
 // The voice service stopped replying on this session. A fresh session picks
 // up the call: it first says the line the call logic wrote (spoken as is),
 // and its prompt carries the call so far. What was recorded stays recorded.
-async function reconnect(c, { greeting, context }) {
+async function reconnect(c, { greeting, context }, why = 'stopped replying') {
   if (call !== c || c.finished) return
-  console.warn('[voice agent] the voice session stopped replying; starting a fresh one')
-  addLine('tool', 'the voice service stopped replying, so we reconnected')
+  console.warn(`[voice agent] the voice session ${why}; starting a fresh one`)
+  addLine('tool', `the voice service ${why}, so we reconnected`)
   setStatus('connecting', 'reconnecting')
   const old = c.ws
   c.ws = null

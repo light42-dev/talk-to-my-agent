@@ -207,6 +207,9 @@ export function createCallSession({ candidate, applications, send: sendRaw, hook
     return { greeting, context }
   }
 
+  // For a host whose voice session closed under a live call.
+  call.resumePlan = resumePlan
+
   // After the host reconnects: the old session's pending results and timers
   // belong to a session that is gone.
   call.resetForNewSession = () => {
