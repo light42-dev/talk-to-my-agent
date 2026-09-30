@@ -77,3 +77,18 @@ test('end_call behind a filler phrase still lets the agent say goodbye before ha
   advance(1700)
   assert.deepEqual(hangups, ['agent'])
 })
+
+test('turns end fast until the agent asks for an email, then it waits for the whole address', (t) => {
+  const { session, sent, reply } = harness(t)
+  const modeUpdates = () => sent.filter((m) => m.type === 'session.update' && m.session?.input?.transcription_mode)
+  reply('r1', { text: 'Thanks, Jen.', tools: [['find_application', { company: 'Northwind Analytics' }]] })
+  assert.equal(modeUpdates().length, 0, 'no switch while screening')
+  reply('r2', { text: 'Got it.', tools: [['record_details', { pay_min: 80000, pay_max: 90000, pay_unit: 'year', pay_basis: 'base' }]] })
+  assert.equal(modeUpdates().length, 0, 'no switch while recording details')
+  reply('r3', { text: 'Thanks.', tools: [['confirm_details', { scope: 'details', confirmed: true }]] })
+  const updates = modeUpdates()
+  assert.equal(updates.length, 1, 'one switch when the email is next')
+  assert.equal(updates[0].session.input.transcription_mode, 'balanced')
+  reply('r4', { text: 'What is the best email?', tools: [['record_contact', { name: 'Jen Park' }]] })
+  assert.equal(modeUpdates().length, 1, 'no repeated switches')
+})

@@ -8,6 +8,12 @@ import { CANDIDATE_TOPICS, END_REASONS } from './tools.js'
 
 export const VOICE = 'alba'
 
+// Turns end as soon as the caller is clearly done. While the caller spells an
+// email address, call.js switches to EMAIL_TRANSCRIPTION_MODE so the agent
+// waits for the whole address.
+export const TRANSCRIPTION_MODE = 'min_latency'
+export const EMAIL_TRANSCRIPTION_MODE = 'balanced'
+
 export function buildGreeting(candidate) {
   return `Hi, you've reached ${candidate.name}'s agent. I'm an AI assistant who handles ${candidate.firstName}'s first conversations about new roles, and I take notes for her. Who am I speaking with?`
 }
@@ -221,6 +227,7 @@ export function buildSession(candidate, applications, now = new Date()) {
     input: {
       keyterms: buildKeyterms(candidate, applications),
       transcription_prompt: TRANSCRIPTION_PROMPT,
+      transcription_mode: TRANSCRIPTION_MODE,
     },
     output: { voice: VOICE },
   }

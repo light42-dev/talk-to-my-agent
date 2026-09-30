@@ -327,7 +327,7 @@ const handlers = {
     const flagged = state.scamFlags.length > 0
     let next
     if (scope === 'contact') {
-      next = `Tell them a short written confirmation is on its way${state.booking ? ' with the calendar invite' : ''}, and that if it becomes a no later, a one-word reply is plenty. Then say goodbye and call end_call.`
+      next = `Tell them a short written confirmation is on its way${state.booking ? ' with the calendar invite' : ''}, and that if they decide not to move forward, a short reply is enough. Then say goodbye and call end_call.`
     } else if (flagged) {
       next = 'Do not book. End the call politely.'
     } else if (!fit.fits) {

@@ -7,6 +7,7 @@
 
 import { audioSeconds, createPlayoutClock, createToolQueue } from './protocol.js'
 import { scamVerdict } from './scam.js'
+import { EMAIL_TRANSCRIPTION_MODE } from './session.js'
 import { addRuleFlag, createCallState, handleToolCall } from './tools.js'
 
 // Errors that leave the call unusable: a rejected configuration would put a
@@ -170,6 +171,12 @@ export function createCallSession({ candidate, applications, send, hooks = {}, n
           call.endFallback = setTimeout(() => scheduleHangup(), 9000)
         }
         if (msg.name === 'flag_scam') call.nudge = null
+        // The agent is about to ask for an email address: give the caller
+        // time to spell it before the turn ends.
+        if (!call.patientForEmail && !state.caller?.email && /\bemail\b/i.test(String(result?.next || ''))) {
+          call.patientForEmail = true
+          send({ type: 'session.update', session: { input: { transcription_mode: EMAIL_TRANSCRIPTION_MODE } } })
+        }
         call.queue.add(msg.call_id, result)
         emit('change')
         break
