@@ -19,6 +19,12 @@ const el = (tag, props = {}, ...children) => {
 }
 
 const WIRE_RATE = 24_000
+// The agent's audio arrives in real time, in 10 ms pieces. Playback waits for a
+// small cushion so a network hiccup doesn't leave the speaker with a gap.
+const PLAYBACK_CUSHION_MS = 200
+const PLAYBACK_MAX_WAIT_MS = 300
+// Microphone audio goes out in 20 ms frames instead of one message per 5 ms.
+const CAPTURE_FRAME_SAMPLES = 480
 const params = new URLSearchParams(location.search)
 const isLocal = ['localhost', '127.0.0.1'].includes(location.hostname)
 // Tests point the page at a fake server; nothing else can.
@@ -264,16 +270,18 @@ function describeTool(name, args, result) {
 
 const CAPTURE_WORKLET = `
   class CaptureProcessor extends AudioWorkletProcessor {
-    constructor() { super(); this._ratio = sampleRate / ${WIRE_RATE}; this._pos = 0; this._prev = 0; this._src = null; this._out = null; }
-    _toPcm(samples, len) {
-      const pcm = new Int16Array(len);
-      for (let i = 0; i < len; i++) { const s = Math.max(-1, Math.min(1, samples[i])); pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff; }
-      return pcm;
+    constructor() { super(); this._ratio = sampleRate / ${WIRE_RATE}; this._pos = 0; this._prev = 0; this._src = null; this._out = null; this._frame = new Int16Array(${CAPTURE_FRAME_SAMPLES}); this._fill = 0; }
+    _send(samples, len) {
+      for (let i = 0; i < len; i++) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        this._frame[this._fill++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        if (this._fill === this._frame.length) { const pcm = this._frame.slice(); this.port.postMessage(pcm.buffer, [pcm.buffer]); this._fill = 0; }
+      }
     }
     process(inputs) {
       const ch = inputs[0]?.[0];
       if (!ch) return true;
-      if (this._ratio === 1) { const pcm = this._toPcm(ch, ch.length); this.port.postMessage(pcm.buffer, [pcm.buffer]); return true; }
+      if (this._ratio === 1) { this._send(ch, ch.length); return true; }
       const n = ch.length;
       if (!this._src || this._src.length < n + 1) { this._src = new Float32Array(n + 1); this._out = new Float32Array(Math.ceil((n + 1) / this._ratio) + 2); }
       const src = this._src, out = this._out;
@@ -281,7 +289,7 @@ const CAPTURE_WORKLET = `
       let outLen = 0, pos = this._pos;
       while (pos < n) { const i = Math.floor(pos); const frac = pos - i; out[outLen++] = src[i] + (src[i + 1] - src[i]) * frac; pos += this._ratio; }
       this._pos = pos - n; this._prev = ch[n - 1];
-      if (outLen) { const pcm = this._toPcm(out, outLen); this.port.postMessage(pcm.buffer, [pcm.buffer]); }
+      if (outLen) this._send(out, outLen);
       return true;
     }
   }
@@ -294,8 +302,10 @@ const PLAYBACK_WORKLET = `
       super();
       this._ring = new Float32Array(sampleRate * 30); this._writePos = 0; this._readPos = 0; this._available = 0;
       this._step = ${WIRE_RATE} / sampleRate; this._rsPos = 0; this._rsPrev = 0; this._drained = false;
+      this._cushion = Math.round(sampleRate * ${PLAYBACK_CUSHION_MS} / 1000); this._maxWait = Math.round(sampleRate * ${PLAYBACK_MAX_WAIT_MS} / 1000);
+      this._playing = false; this._waited = 0;
       this.port.onmessage = (e) => {
-        if (e.data === 'stop') { this._writePos = this._readPos = this._available = 0; this._rsPos = this._rsPrev = 0; return; }
+        if (e.data === 'stop') { this._writePos = this._readPos = this._available = 0; this._rsPos = this._rsPrev = 0; this._playing = false; this._waited = 0; return; }
         const int16 = new Int16Array(e.data);
         if (!int16.length) return;
         if (this._drained) { this._rsPrev = 0; this._rsPos = 0; this._drained = false; }
@@ -308,9 +318,13 @@ const PLAYBACK_WORKLET = `
     _push(v) { if (this._available < this._ring.length) { this._ring[this._writePos] = v; this._writePos = (this._writePos + 1) % this._ring.length; this._available++; } }
     process(inputs, outputs) {
       const output = outputs[0]; const out = output[0]; const cap = this._ring.length;
+      if (!this._playing && this._available > 0) {
+        this._waited += out.length;
+        if (this._available >= this._cushion || this._waited >= this._maxWait) { this._playing = true; this._waited = 0; }
+      }
       for (let i = 0; i < out.length; i++) {
-        if (this._available > 0) { out[i] = this._ring[this._readPos]; this._readPos = (this._readPos + 1) % cap; this._available--; }
-        else { out[i] = 0; this._drained = true; }
+        if (this._playing && this._available > 0) { out[i] = this._ring[this._readPos]; this._readPos = (this._readPos + 1) % cap; this._available--; }
+        else { out[i] = 0; if (this._playing) { this._playing = false; this._drained = true; } }
       }
       for (let ch = 1; ch < output.length; ch++) output[ch].set(out);
       return true;
