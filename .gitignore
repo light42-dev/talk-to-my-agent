@@ -1,0 +1,5 @@
+node_modules/
+.env
+.vercel/
+tests/e2e/shots/
+eval/runs/

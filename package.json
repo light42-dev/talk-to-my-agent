@@ -1,0 +1,22 @@
+{
+  "name": "talk-to-my-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "An AI voice agent that answers recruiters' calls for job seekers. Built on the AssemblyAI Voice Agent API.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "node scripts/dev-server.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "e2e": "node tests/e2e/run.mjs && node tests/e2e/smoke.mjs && node tests/e2e/eval.mjs",
+    "eval": "node eval/run.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "^1.56.0",
+    "ws": "^8.18.0"
+  }
+}

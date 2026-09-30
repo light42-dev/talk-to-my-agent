@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Talk to My Agent</title>
+<meta name="description" content="An AI voice agent that answers recruiters' calls for job seekers, built on the AssemblyAI Voice Agent API.">
+<link rel="icon" href="img/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="img/icon.svg" alt="" width="28" height="28">
+    <div>
+      <h1>Talk to My Agent</h1>
+      <p class="tagline">An AI voice agent that answers recruiters' calls for job seekers</p>
+    </div>
+  </div>
+  <div class="call-meta">
+    <span class="status idle" id="status"><span id="status-text">ready</span></span>
+    <span class="timer" id="elapsed">0:00</span>
+  </div>
+</header>
+
+<main class="grid">
+  <!-- 1. What the recruiter sees -->
+  <section class="col" aria-labelledby="resume-h">
+    <p class="eyebrow" id="resume-h">1 · You're the recruiter</p>
+    <article class="card resume">
+      <div class="resume-head">
+        <div class="avatar" aria-hidden="true" id="avatar">MC</div>
+        <div>
+          <h2 id="cand-name">Maya Chen</h2>
+          <p class="muted" id="cand-headline">Senior Data Analyst · Austin, Texas</p>
+        </div>
+      </div>
+      <p class="contact">
+        <span class="phone-chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1z"/></svg><span id="cand-phone">+1 (512) 555-0147</span></span>
+        <span class="muted small">answered by her agent</span>
+      </p>
+      <ul class="resume-lines" id="resume-lines"></ul>
+      <div class="call-controls">
+        <button id="call-btn" class="primary">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1z"/></svg>
+          <span id="call-label">Call Maya's agent</span>
+        </button>
+        <select id="mic" aria-label="Microphone"><option value="">Default microphone</option></select>
+      </div>
+      <p class="hint">Use headphones. The agent speaks first and tells you it's an AI.</p>
+    </article>
+
+    <p class="eyebrow">Try it as…</p>
+    <div class="scenarios" id="scenarios"></div>
+
+    <details class="card knows">
+      <summary>What the agent knows about Maya</summary>
+      <div id="knows-body"></div>
+    </details>
+  </section>
+
+  <!-- 2. The call -->
+  <section class="col" aria-labelledby="live-h">
+    <p class="eyebrow" id="live-h">2 · The call</p>
+    <article class="card live">
+      <div class="shield clear" id="shield">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5z"/></svg>
+        <div><strong id="shield-title">Scam check: nothing suspicious</strong><span id="shield-detail">Our code checks everything the caller says for signs of a scam.</span></div>
+      </div>
+      <h3 class="sub">Confirmed so far</h3>
+      <ul class="facts" id="facts"></ul>
+      <h3 class="sub">Transcript</h3>
+      <div class="transcript" id="transcript">
+        <p class="empty">Press <strong>Call Maya's agent</strong> and talk like a recruiter would.</p>
+      </div>
+    </article>
+  </section>
+
+  <!-- 3. After the call -->
+  <section class="col" aria-labelledby="after-h">
+    <p class="eyebrow" id="after-h">3 · A minute later</p>
+    <article class="card inbox" id="inbox">
+      <div class="card-head"><span>Recruiter's inbox</span><span class="pill" id="receipt-status">waiting</span></div>
+      <div class="inbox-body" id="inbox-body">
+        <p class="empty">After the call, the recruiter gets an email with the details they confirmed and a calendar invite.</p>
+      </div>
+    </article>
+    <article class="phone" aria-label="Maya's phone">
+      <div class="phone-notch"></div>
+      <div class="phone-time" id="phone-time">9:41</div>
+      <div class="phone-screen" id="phone-screen">
+        <p class="empty light">After the call, Maya gets a summary here. She doesn't have to pick up.</p>
+      </div>
+    </article>
+    <article class="card checks" id="checks" hidden>
+      <div class="card-head"><span>What our code checked</span></div>
+      <ul id="checks-list"></ul>
+    </article>
+  </section>
+</main>
+
+<footer class="foot">
+  <span>Maya Chen and every company here are fictional.</span>
+  <span>Built on the <a href="https://www.assemblyai.com/docs/voice-agents/voice-agent-api" target="_blank" rel="noopener">AssemblyAI Voice Agent API</a>.</span>
+</footer>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
