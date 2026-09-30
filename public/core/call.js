@@ -29,7 +29,7 @@ function nudgeText(flag, firstName) {
 // start; after tool results the next reply starts within half a second. A reply
 // cut off by a noise, or one that ended with nothing in it, gets no reply at
 // all: the server waits for the caller, who is waiting for the agent.
-export const STALL_MS = { callerLine: 6500, toolResult: 4000, noReply: 2500 }
+export const STALL_MS = { callerLine: 6500, toolResult: 4000, noReply: 1200 }
 const MAX_RECOVERIES = 4
 export const RESUME_TEXT =
   'Carry on from where the call stopped. If the caller said something you have not answered, answer it. If you were cut off, say your last point again in one short sentence. If you were waiting for a tool result, call that tool again.'
