@@ -499,12 +499,21 @@ async function startCall() {
     }
   } catch (error) {
     if (call !== c) return
-    setStatus('error', error.message)
+    setStatus('error', micProblem(error) || error.message)
     teardownAudio()
     call = null
     $('call-btn').disabled = false
     $('mic').disabled = false
   }
+}
+
+// Plain-language help when the browser won't give the page a microphone.
+function micProblem(error) {
+  if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError')
+    return 'The microphone is blocked. Click the icon left of the address bar, allow the microphone, then reload the page.'
+  if (error?.name === 'NotFoundError') return 'No microphone found. Plug one in or pick another one below, then try again.'
+  if (error?.name === 'NotReadableError') return 'Another app is using the microphone. Close it and try again.'
+  return null
 }
 
 function teardownAudio() {
