@@ -227,11 +227,14 @@ async function runScenario(sc, { text }) {
         say('--', `voice session stuck, reconnecting: "${plan.greeting}"`)
         const old = a
         a = null
+        // New handlers first: from here on the old session's events,
+        // including its session.ended, are ignored.
+        const handlers = agentHandlers()
         session.resetForNewSession()
         old?.send({ type: 'session.end' })
         setTimeout(() => old?.close(), 1500)
         try {
-          const fresh = await openJsonSocket(wsUrl(await token(maxSeconds + 60)), agentHandlers())
+          const fresh = await openJsonSocket(wsUrl(await token(maxSeconds + 60)), handlers)
           if (finishing) return fresh.close()
           await fresh.opened
           a = fresh
