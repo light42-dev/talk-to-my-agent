@@ -295,3 +295,12 @@ test('the email read-back cannot be confirmed before an email is recorded', () =
   assert.equal(r.ok, false)
   assert.match(r.next, /record_contact/)
 })
+
+test('the decision date is worked out by code from the caller’s words', () => {
+  const s = newCall()
+  handleToolCall(s, 'record_details', { decision_when: 'by October 20th' })
+  assert.equal(s.details.decisionDate, '2026-10-20')
+  handleToolCall(s, 'record_details', { decision_when: 'by the end of next week' })
+  assert.equal(s.details.decisionDate, null, 'a correction without a date clears the old date')
+  assert.equal(s.details.decisionText, 'by the end of next week')
+})

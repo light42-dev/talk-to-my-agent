@@ -25,11 +25,12 @@ function nudgeText(flag, firstName) {
 }
 
 // If the line stays quiet this long while the agent owes the caller a reply,
-// ask for one. After a caller's line the model can take 3 to 4 seconds to
-// start; after tool results the next reply starts within half a second. A reply
-// cut off by a noise, or one that ended with nothing in it, gets no reply at
-// all: the server waits for the caller, who is waiting for the agent.
-export const STALL_MS = { callerLine: 6500, toolResult: 4000, noReply: 1200 }
+// ask for one. A reply that came back with nothing in it, or was cut off by a
+// noise, gets no follow-up from the server: it waits for the caller, who is
+// waiting for the agent, so that is picked up quickly. After a caller's line
+// or tool results the server does reply, but under load it can take 5 to 10
+// seconds, and asking early makes the agent speak twice.
+export const STALL_MS = { callerLine: 10000, toolResult: 15000, noReply: 1200 }
 const MAX_RECOVERIES = 4
 export const RESUME_TEXT =
   'Carry on from where the call stopped. If the caller said something you have not answered, answer it. If you were cut off, say your last point again in one short sentence. If you were waiting for a tool result, call that tool again.'

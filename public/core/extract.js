@@ -96,18 +96,24 @@ function extractProcess(text, now) {
   if (decide) {
     const when = decide[1].trim().replace(/[,;:]+$/, '')
     out.decision_when = when
-    const date = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?\b/i.exec(when)
-    if (date) {
-      const month = MONTHS.indexOf(date[1].toLowerCase())
-      const day = Number(date[2])
-      const base = new Date(now)
-      let year = base.getUTCFullYear()
-      // A date that has already passed this year means next year.
-      if (Date.UTC(year, month, day) < Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate()) - 86400000) year++
-      out.decision_date = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-    }
+    const date = dateFromWords(when, now)
+    if (date) out.decision_date = date
   }
   return out
+}
+
+// "by October 20th" -> "2026-10-20", the next such date from now.
+export function dateFromWords(text, now = new Date()) {
+  const date = /\b(january|february|march|april|may|june|july|august|september|october|november|december)\s+(\d{1,2})(?:st|nd|rd|th)?\b/i.exec(String(text || ''))
+  if (!date) return null
+  const month = MONTHS.indexOf(date[1].toLowerCase())
+  const day = Number(date[2])
+  if (day < 1 || day > 31) return null
+  const base = new Date(now)
+  let year = base.getUTCFullYear()
+  // A date that has already passed this year means next year.
+  if (Date.UTC(year, month, day) < Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate()) - 86400000) year++
+  return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
 }
 
 export function extractDetails(text, { now = new Date(), company = null } = {}) {

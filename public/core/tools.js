@@ -2,6 +2,7 @@
 // validates every value, decides fit, and tells the model what to do next.
 // Pure functions, so the browser, the server and the tests share them.
 
+import { dateFromWords } from './extract.js'
 import {
   PAY_BASES,
   PAY_UNITS,
@@ -120,7 +121,9 @@ export function readbackSentence(state) {
   if (d.decisionDate) parts.push(`a decision by ${formatDate(d.decisionDate)}`)
   else if (d.decisionText) parts.push(`a decision ${d.decisionText}`)
   if (!parts.length) return ''
-  return parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(', ')}, and ${parts.at(-1)}`
+  if (parts.length === 1) return parts[0]
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`
+  return `${parts.slice(0, -1).join(', ')}, and ${parts.at(-1)}`
 }
 
 // A field moves to "captured" when first heard, or back to "captured" if a
@@ -247,8 +250,13 @@ const handlers = {
 
     if (args.decision_date !== undefined || args.decision_when !== undefined) {
       const before = [d.decisionDate, d.decisionText]
+      if (args.decision_when) {
+        d.decisionText = String(args.decision_when)
+        // The model gives the caller's words; code works out the date. Asking
+        // the model for YYYY-MM-DD made its replies time out on the voice API.
+        d.decisionDate = dateFromWords(args.decision_when, new Date(state.startedAt))
+      }
       if (isIsoDate(args.decision_date)) d.decisionDate = args.decision_date
-      if (args.decision_when) d.decisionText = String(args.decision_when)
       if (d.decisionDate || d.decisionText) {
         const changed = !same(before, [d.decisionDate, d.decisionText])
         recorded.push('decision')

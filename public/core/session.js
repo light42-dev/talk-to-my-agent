@@ -125,8 +125,11 @@ export function buildTools() {
           office_location: { type: 'string', description: 'City of the office for hybrid or on-site roles.', examples: ['Austin', 'Dallas'] },
           office_days_per_week: { type: 'integer', minimum: 0, maximum: 5, description: 'Days per week in the office for hybrid roles.' },
           interview_rounds: { type: 'integer', minimum: 1, maximum: 15, description: 'How many interview rounds in total.' },
-          decision_date: { type: 'string', format: 'date', description: 'The date the candidate will hear back either way, as YYYY-MM-DD, worked out from today if they said something like next Friday.', examples: ['2026-10-20'] },
-          decision_when: { type: 'string', description: 'When the candidate will hear back, in the caller\'s words.', examples: ['by the end of next week'] },
+          decision_when: {
+            type: 'string',
+            description: "When the candidate will hear back either way, in the caller's words. Code works out the date.",
+            examples: ['by October 20th', 'by the end of next week'],
+          },
           role_status: { type: 'string', enum: ['new', 'backfill', 'unknown'], description: 'Whether the role is newly created or replaces someone, if they say.' },
           note: { type: 'string', description: 'Any other useful detail the caller shares about the role or process.' },
         },
